@@ -14,6 +14,7 @@ import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import BarChartRoundedIcon from '@mui/icons-material/BarChartRounded';
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import MenuBookRoundedIcon from '@mui/icons-material/MenuBookRounded';
+import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 
 import { useNavigation, NAV_TABS } from '../../kpi/NavigationContext';
 import { useAuth } from '../../rbac/AuthContext';
@@ -34,7 +35,6 @@ export default function MenuContent() {
       text: 'QL Cán bộ, VTVL & Phòng ban',
       subtext: 'Master data tổ chức & nhân sự',
       icon: <ApartmentRoundedIcon />,
-      roleBadge: 'HR Admin',
       color: 'primary',
     });
   }
@@ -46,7 +46,6 @@ export default function MenuContent() {
       text: 'QL Nhiệm vụ & KPI / OKR',
       subtext: 'Ngân hàng KPI gốc & OKR',
       icon: <MenuBookRoundedIcon />,
-      roleBadge: 'Quản trị',
       color: 'success',
     });
   }
@@ -58,7 +57,6 @@ export default function MenuContent() {
       text: role === ROLES.DEPT_HEAD ? 'KPI Cá nhân (Trưởng phòng)' : 'KPI & Tiến độ cá nhân',
       subtext: 'Cập nhật tiến độ & tự đánh giá',
       icon: <AssignmentRoundedIcon />,
-      roleBadge: 'Cá nhân',
       color: 'info',
     });
   }
@@ -70,7 +68,6 @@ export default function MenuContent() {
       text: 'Đánh giá KPI Cấp phòng',
       subtext: 'Chấm điểm công chức & xem tổng hợp',
       icon: <SupervisorAccountRoundedIcon />,
-      roleBadge: 'Trưởng phòng',
       color: 'warning',
     });
   }
@@ -82,30 +79,38 @@ export default function MenuContent() {
       text: 'Thẩm định & Phê duyệt cấp Ban',
       subtext: 'Thẩm định & phê duyệt kết quả',
       icon: <GavelRoundedIcon />,
-      roleBadge: 'Lãnh đạo Ban',
       color: 'error',
     });
   }
 
-  // 5. Agency overview analytics (Dept Head & Leadership)
-  if (role !== ROLES.SPECIALIST) {
+  // 5. Agency overview analytics & collective dashboard
+  if (hasPermission(PERMISSIONS.DASHBOARD_ANALYTICS_VIEW) || role !== ROLES.STAFF) {
     items.push({
       id: NAV_TABS.OVERVIEW,
-      text: 'Tổng quan chỉ số KPI',
-      subtext: 'Biểu đồ phân tích hiệu suất',
+      text: 'Tổng quan kết quả tập thể',
+      subtext: 'Dashboard tổng hợp & biểu đồ',
       icon: <BarChartRoundedIcon />,
-      roleBadge: 'Báo cáo',
       color: 'primary',
     });
   }
 
-  // 6. RBAC Matrix - visible to everyone to understand and inspect access rules
+  // 6. Audit Log - History of edits (for HR_ADMIN and SUPER_ADMIN)
+  if (hasPermission(PERMISSIONS.AUDIT_LOG_VIEW) || role === ROLES.HR_ADMIN || role === ROLES.SUPER_ADMIN) {
+    items.push({
+      id: NAV_TABS.AUDIT_LOG,
+      text: 'Nhật ký hệ thống (Audit Log)',
+      subtext: 'Lịch sử chỉnh sửa & thao tác',
+      icon: <HistoryRoundedIcon />,
+      color: 'secondary',
+    });
+  }
+
+  // 7. RBAC Matrix - visible to everyone to understand and inspect access rules
   const rbacItem = {
     id: NAV_TABS.RBAC_MATRIX,
     text: 'Ma trận phân quyền (RBAC)',
     subtext: 'Chi tiết phân quyền 3 cấp',
     icon: <SecurityRoundedIcon />,
-    roleBadge: 'Hệ thống',
     color: 'default',
   };
 
@@ -137,14 +142,6 @@ export default function MenuContent() {
                         <Typography variant="body2" sx={{ fontWeight: isSelected ? 700 : 500, fontSize: '0.85rem' }}>
                           {item.text}
                         </Typography>
-                        {item.roleBadge && (
-                          <Chip
-                            label={item.roleBadge}
-                            color={item.color}
-                            size="small"
-                            sx={{ height: 16, fontSize: '0.62rem', fontWeight: 600 }}
-                          />
-                        )}
                       </Box>
                     }
                     secondary={

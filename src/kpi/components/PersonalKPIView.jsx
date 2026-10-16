@@ -25,6 +25,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
 import Checkbox from '@mui/material/Checkbox';
+import IconButton from '@mui/material/IconButton';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import RateReviewRoundedIcon from '@mui/icons-material/RateReviewRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
@@ -34,6 +35,10 @@ import VerifiedUserRoundedIcon from '@mui/icons-material/VerifiedUserRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
+import EmojiEventsRoundedIcon from '@mui/icons-material/EmojiEventsRounded';
+import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 
 import TablePagination from '@mui/material/TablePagination';
 import { useKPI } from '../KPIContext';
@@ -43,6 +48,8 @@ import { ROLES } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_ASSIGNED_TASKS, INITIAL_OKRS } from '../data/mockKPIData';
 import { useToast } from '../hooks/useToast';
+import { calculateTaskScore, calculateTotalKPIScore, determineGrade } from '../utils/scoringEngine';
+import { logAction } from '../utils/auditLogger';
 
 export default function PersonalKPIView() {
   const { personalKPIs, updateKPIProgress, submitSelfEvaluation, submitAllSelfEvaluations, agencyApproval } = useKPI();
@@ -64,7 +71,11 @@ export default function PersonalKPIView() {
     ? userAssignedTasks.map((t, index) => {
         const isSelfAssigned = Boolean(t.isSelfAssigned);
         const isPending = t.approvalStatus === 'Chờ duyệt';
-        const progress = typeof t.progress === 'number' ? t.progress : (t.status === 'Đã hoàn thành' ? 100 : 0);
+        const targetQty = Number(t.targetQty) || 1;
+        const currentValue = typeof t.currentValue === 'number' ? t.currentValue : 0;
+        const progress = typeof t.progress === 'number'
+          ? t.progress
+          : (targetQty > 0 ? Math.min(100, Math.round((currentValue / targetQty) * 100)) : (t.status === 'Đã hoàn thành' ? 100 : 0));
 
         let currentStatus = t.status;
         if (!currentStatus) {
@@ -77,14 +88,22 @@ export default function PersonalKPIView() {
           }
         }
 
+        const weight = t.weight || Math.round(100 / userAssignedTasks.length);
+        const baseScore = t.baseScore ?? ((weight * 70) / 100);
+        const autoScore = calculateTaskScore(currentValue, targetQty, baseScore);
+
         return {
           id: t.id,
           code: t.masterCode || `KPI-ASG-0${index + 1}`,
           title: t.taskName,
-          target: `${t.targetQty} ${t.unit || 'Hồ sơ'}`,
-          currentValue: typeof t.currentValue === 'number' ? t.currentValue : (progress === 100 ? t.targetQty : 0),
+          targetQty: targetQty,
+          target: `${targetQty} ${t.unit || 'Hồ sơ'}`,
+          currentValue: currentValue,
+          actual: currentValue,
           unit: t.unit || 'Hồ sơ',
-          weight: t.weight || Math.round(100 / userAssignedTasks.length),
+          weight: weight,
+          baseScore: baseScore,
+          autoScore: autoScore,
           status: currentStatus,
           progress: progress,
           proofUrl: t.proofUrl || (t.outputProduct ? `Sản phẩm: ${t.outputProduct}` : ''),
@@ -99,7 +118,25 @@ export default function PersonalKPIView() {
           createdAt: t.createdAt || 0,
         };
       })
-    : personalKPIs;
+    : personalKPIs.map((kpi) => {
+        const targetQty = typeof kpi.target === 'number' ? kpi.target : parseFloat(kpi.target) || 10;
+        const currentValue = kpi.currentValue ?? Math.round((kpi.progress * targetQty) / 100);
+        const baseScore = (kpi.weight * 70) / 100;
+        const autoScore = calculateTaskScore(currentValue, targetQty, baseScore);
+        return {
+          ...kpi,
+          targetQty,
+          currentValue,
+          actual: currentValue,
+          baseScore,
+          autoScore,
+        };
+      });
+
+  // Calculate Auto Total KPI Score (Cap at 70 points)
+  const totalAutoKPIScore = calculateTotalKPIScore(displayKPIs);
+  const projectedTotalScore = Math.min(100, Math.round((totalAutoKPIScore + 30) * 100) / 100); // 70 KPI + 30 tiêu chuẩn chính trị, đạo đức
+  const projectedGrade = determineGrade(projectedTotalScore);
 
   // Propose KPI Dialog state
   const [proposeDialogOpen, setProposeDialogOpen] = useState(false);
@@ -112,7 +149,7 @@ export default function PersonalKPIView() {
     okrId: okrs[0]?.id || '',
   });
 
-  // Progress Update Dialog state
+  // Progress Update Dialog state ("Báo cáo Tiến độ")
   const [progressDialog, setProgressDialog] = useState({
     open: false,
     kpi: null,
@@ -126,13 +163,34 @@ export default function PersonalKPIView() {
   const [evalDialog, setEvalDialog] = useState({
     open: false,
     kpi: null,
-    selfScore: 85,
+    selfScore: 90,
     selfComment: '',
   });
 
   const [notification, setNotification] = useState('');
 
-  // Calculate weighted average
+  const canView = hasPermission(PERMISSIONS.KPI_PERSONAL_VIEW) || hasPermission(PERMISSIONS.KPI_PERSONAL_VIEW_OWN);
+  if (!canView) {
+    return (
+      <Box sx={{ width: '100%', py: 4 }}>
+        <Alert
+          severity="error"
+          variant="filled"
+          icon={<LockRoundedIcon fontSize="inherit" />}
+          sx={{ borderRadius: 2 }}
+        >
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            Truy cập bị từ chối theo chính sách RBAC
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            Bạn không có quyền xem KPI cá nhân. Vui lòng liên hệ Quản trị viên hệ thống để kiểm tra lại phân quyền.
+          </Typography>
+        </Alert>
+      </Box>
+    );
+  }
+
+  // Summary calculations
   const totalWeight = displayKPIs.reduce((sum, item) => sum + item.weight, 0) || 100;
   const weightedProgress =
     displayKPIs.reduce((sum, item) => sum + (item.progress * item.weight) / totalWeight, 0).toFixed(1);
@@ -151,10 +209,14 @@ export default function PersonalKPIView() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
 
-  const filteredKPIs = [...displayKPIs].reverse().filter((kpi) => {
+  const filteredKPIs = displayKPIs.filter((item) => {
     if (!searchTerm) return true;
     const q = searchTerm.toLowerCase();
-    return Object.values(kpi).some((val) => String(val).toLowerCase().includes(q));
+    return (
+      item.code.toLowerCase().includes(q) ||
+      item.title.toLowerCase().includes(q) ||
+      item.target.toLowerCase().includes(q)
+    );
   });
   const paginatedKPIs = filteredKPIs.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
@@ -191,6 +253,12 @@ export default function PersonalKPIView() {
     );
 
     const recipient = role === ROLES.DEPT_HEAD ? 'Lãnh đạo Ban' : 'Trưởng phòng';
+    logAction(
+      'Gửi đánh giá',
+      currentUser,
+      `Gửi ${selectedTaskIds.length} nhiệm vụ tự đánh giá lên ${recipient} thẩm định`,
+      'KPI Cá nhân'
+    );
     showToast(`Đã gửi ${selectedTaskIds.length} nhiệm vụ tự đánh giá lên ${recipient} thành công! Trạng thái chuyển sang "Đã gửi đánh giá".`, 'success');
     setSelectedTaskIds([]);
   };
@@ -239,29 +307,47 @@ export default function PersonalKPIView() {
     };
 
     setAssignedTasks([newProposedTask, ...assignedTasks]);
+    logAction(
+      'Đề xuất nhiệm vụ',
+      currentUser,
+      `Đề xuất nhiệm vụ cá nhân mới "${proposeForm.taskName}" (Chỉ tiêu: ${proposeForm.targetQty} ${proposeForm.unit || 'sản phẩm'})`,
+      'KPI Cá nhân'
+    );
     showToast('Đã gửi đề xuất KPI cá nhân thành công! Trạng thái hiện tại: "Chờ duyệt".', 'success');
     setProposeDialogOpen(false);
   };
 
+  // Open "Báo cáo Tiến độ" Dialog
   const handleOpenProgress = (kpi) => {
-    if (kpi.status === 'Đã tự chấm' || kpi.status === 'Đã gửi đánh giá' || kpi.status === 'Đã duyệt') {
-      showToast('Nhiệm vụ đã tự chấm điểm, không thể chỉnh sửa tiến độ!', 'warning');
+    if (kpi.approvalStatus === 'Chờ duyệt' || kpi.status === 'Chờ duyệt') {
+      showToast('Nhiệm vụ tự đề xuất đang ở trạng thái Chờ duyệt, vui lòng chờ cấp trên phê duyệt trước khi cập nhật tiến độ!', 'warning');
       return;
     }
+    if (kpi.status === 'Đã tự chấm' || kpi.status === 'Đã gửi đánh giá' || kpi.status === 'Đã duyệt') {
+      showToast('Nhiệm vụ đã tự chấm điểm / đã duyệt, không thể chỉnh sửa tiến độ!', 'warning');
+      return;
+    }
+    const curVal = kpi.currentValue ?? 0;
+    const tgtVal = kpi.targetQty ?? 1;
+    const autoProg = tgtVal > 0 ? Math.min(100, Math.round((curVal / tgtVal) * 100)) : (kpi.progress ?? 0);
+
     setProgressDialog({
       open: true,
       kpi,
-      progress: kpi.progress ?? 0,
-      currentValue: kpi.currentValue ?? 0,
+      currentValue: curVal,
+      progress: kpi.progress !== undefined ? kpi.progress : autoProg,
       proofUrl: kpi.proofUrl || '',
       proofNote: kpi.proofNote || '',
     });
   };
 
+  // Save "Báo cáo Tiến độ" Dialog
   const handleSaveProgress = () => {
     if (!progressDialog.kpi) return;
-    const newProgress = Number(progressDialog.progress);
-    const newCurrentValue = Number(progressDialog.currentValue);
+    const targetQty = Number(progressDialog.kpi.targetQty) || 1;
+    const newCurrentValue = Math.max(0, Number(progressDialog.currentValue) || 0);
+    // Auto-calculate progress %
+    const newProgress = targetQty > 0 ? Math.min(100, Math.round((newCurrentValue / targetQty) * 100)) : 100;
 
     setAssignedTasks((prev) =>
       prev.map((t) => {
@@ -296,54 +382,68 @@ export default function PersonalKPIView() {
       proofNote: progressDialog.proofNote,
     });
 
-    showToast(`Đã lưu cập nhật tiến độ (${newProgress}%) cho nhiệm vụ "${progressDialog.kpi.code}" thành công!`, 'success');
-    setProgressDialog({ open: false, kpi: null, progress: 0, currentValue: 0, proofUrl: '', proofNote: '' });
+    logAction(
+      'Cập nhật tiến độ',
+      currentUser,
+      `Cập nhật tiến độ nhiệm vụ "${progressDialog.kpi.title || progressDialog.kpi.code}": Khối lượng hoàn thành ${progressDialog.kpi.currentValue ?? 0} -> ${newCurrentValue} (${newProgress}%)`,
+      'KPI Cá nhân'
+    );
+
+    showToast(`Đã lưu báo cáo tiến độ và tự động tính lại tiến độ (${newProgress}%) cho nhiệm vụ "${progressDialog.kpi.code || progressDialog.kpi.title}"!`, 'success');
+    setProgressDialog({ ...progressDialog, open: false });
   };
 
   const handleOpenEval = (kpi) => {
     if (kpi.progress < 100) {
-      showToast('Nút tự chấm chỉ khả dụng khi tiến độ nhiệm vụ đạt 100%!', 'warning');
+      showToast('Nhiệm vụ chưa đạt 100% tiến độ, không thể tự chấm điểm!', 'warning');
       return;
     }
     setEvalDialog({
       open: true,
       kpi,
-      selfScore: kpi.selfScore ?? 90,
+      selfScore: kpi.selfScore || 90,
       selfComment: kpi.selfComment || '',
     });
   };
 
   const handleSaveEval = () => {
-    if (!evalDialog.kpi) return;
-    const score = Number(evalDialog.selfScore);
-    const comment = evalDialog.selfComment;
+    if (evalDialog.kpi) {
+      const newScore = Number(evalDialog.selfScore);
 
-    setAssignedTasks((prev) =>
-      prev.map((t) => {
-        if (t.id === evalDialog.kpi.id) {
-          return {
-            ...t,
-            selfScore: score,
-            selfComment: comment,
-            status: 'Đã tự chấm',
-          };
-        }
-        return t;
-      })
-    );
+      setAssignedTasks((prev) =>
+        prev.map((t) => {
+          if (t.id === evalDialog.kpi.id) {
+            return {
+              ...t,
+              selfScore: newScore,
+              selfComment: evalDialog.selfComment,
+              status: 'Đã tự chấm',
+            };
+          }
+          return t;
+        })
+      );
 
-    submitSelfEvaluation(evalDialog.kpi.id, {
-      selfScore: score,
-      selfComment: comment,
-    });
+      submitSelfEvaluation(evalDialog.kpi.id, {
+        selfScore: newScore,
+        selfComment: evalDialog.selfComment,
+      });
 
-    showToast(`Đã lưu điểm tự chấm (${score}/100) cho nhiệm vụ "${evalDialog.kpi.code}" thành công! Trạng thái chuyển sang "Đã tự chấm".`, 'success');
-    setEvalDialog({ open: false, kpi: null, selfScore: 90, selfComment: '' });
+      logAction(
+        'Tự chấm điểm',
+        currentUser,
+        `Tự chấm điểm nhiệm vụ "${evalDialog.kpi.title || evalDialog.kpi.code}": ${newScore}/100 điểm. Nhận xét: "${evalDialog.selfComment || 'Đã hoàn thành sản phẩm'}"`,
+        'KPI Cá nhân'
+      );
+
+      showToast(`Đã lưu tự chấm điểm (${newScore} điểm) cho nhiệm vụ "${evalDialog.kpi.code}". Trạng thái chuyển sang "Đã tự chấm".`, 'success');
+      setEvalDialog({ ...evalDialog, open: false });
+    }
   };
 
   const handleSubmitAll = () => {
     if (eligibleToSendTasks.length === 0) {
-      showToast('Không có nhiệm vụ nào ở trạng thái "Đã tự chấm" để gửi đánh giá!', 'warning');
+      showToast('Không có nhiệm vụ nào ở trạng thái "Đã tự chấm" để gửi lên cấp trên!', 'warning');
       return;
     }
 
@@ -361,6 +461,12 @@ export default function PersonalKPIView() {
 
     submitAllSelfEvaluations();
     const recipient = role === ROLES.DEPT_HEAD ? 'Lãnh đạo Ban' : 'Trưởng phòng';
+    logAction(
+      'Gửi đánh giá',
+      currentUser,
+      `Gửi toàn bộ ${eligibleToSendTasks.length} nhiệm vụ tự đánh giá lên ${recipient} thẩm định`,
+      'KPI Cá nhân'
+    );
     showToast(`Đã gửi toàn bộ ${eligibleToSendTasks.length} nhiệm vụ tự đánh giá lên ${recipient} phê duyệt!`, 'success');
     setSelectedTaskIds([]);
   };
@@ -385,7 +491,7 @@ export default function PersonalKPIView() {
           Phân quyền RBAC: {roleDetails.name} (Đăng nhập: {currentUser.name})
         </Typography>
         <Typography variant="body2" sx={{ mt: 0.5 }}>
-          {roleDetails.description} Bạn có thể tự đề xuất KPI/nhiệm vụ cá nhân để gửi lên cấp quản lý phê duyệt hoặc xem các nhiệm vụ được giao từ Mục 2.
+          {roleDetails.description} Bạn có thể cập nhật khối lượng thực tế và tài liệu minh chứng để hệ thống tự động chấm điểm KPI theo Hướng dẫn 05-HD/TU.
         </Typography>
       </Alert>
 
@@ -398,6 +504,67 @@ export default function PersonalKPIView() {
           {notification}
         </Alert>
       )}
+
+      {/* Summary Banner Card: Tổng điểm KPI Tự động */}
+      <Card
+        variant="elevation"
+        elevation={0}
+        sx={{
+          mb: 3,
+          p: 2.5,
+          borderRadius: 2.5,
+          background: 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)',
+          border: '1px solid #90caf9',
+          boxShadow: '0 4px 20px rgba(25, 118, 210, 0.08)',
+        }}
+      >
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'flex-start', md: 'center' }}
+          spacing={2}
+        >
+          <Box>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <AutoAwesomeRoundedIcon color="primary" sx={{ fontSize: 28 }} />
+              <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.dark' }}>
+                TỔNG KẾT ĐIỂM KPI TỰ ĐỘNG THEO HƯỚNG DẪN 05-HD/TU
+              </Typography>
+            </Stack>
+            <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.5 }}>
+              Hệ thống tự động chấm điểm theo khối lượng thực tế hoàn thành so với chỉ tiêu giao (Tối đa 70 điểm tiêu chí KPI).
+            </Typography>
+          </Box>
+
+          <Box
+            sx={{
+              p: 2,
+              borderRadius: 2,
+              bgcolor: 'background.paper',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+              textAlign: { xs: 'left', md: 'right' },
+              minWidth: 260,
+            }}
+          >
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+              Tổng điểm KPI Tự động của bạn trong kỳ:
+            </Typography>
+            <Typography variant="h4" sx={{ fontWeight: 800, color: 'primary.main', my: 0.5 }}>
+              {totalAutoKPIScore}{' '}
+              <Typography component="span" variant="h6" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+                / 70 điểm
+              </Typography>
+            </Typography>
+            <Chip
+              icon={<EmojiEventsRoundedIcon sx={{ fontSize: 16 }} />}
+              label={`Xếp loại dự kiến: ${projectedGrade}`}
+              size="small"
+              color={projectedTotalScore >= 90 ? 'success' : projectedTotalScore >= 70 ? 'primary' : 'warning'}
+              sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+            />
+          </Box>
+        </Stack>
+      </Card>
 
       {/* Overview Stat Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -439,16 +606,16 @@ export default function PersonalKPIView() {
           <Card variant="outlined" sx={{ borderRadius: 2, height: '100%' }}>
             <CardContent>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                ĐIỂM TỰ ĐÁNH GIÁ (BÌNH QUÂN)
+                ĐIỂM KPI TỰ ĐỘNG ĐẠT ĐƯỢC
               </Typography>
               <Typography variant="h4" sx={{ fontWeight: 700, mt: 0.5, color: 'info.main' }}>
-                {weightedSelfScore}
+                {totalAutoKPIScore}
                 <Typography component="span" variant="body2" color="text.secondary">
-                  /100
+                  /70
                 </Typography>
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Dựa trên {displayKPIs.length} chỉ tiêu trọng số
+                Dựa trên {displayKPIs.length} chỉ tiêu phân bổ
               </Typography>
             </CardContent>
           </Card>
@@ -472,7 +639,7 @@ export default function PersonalKPIView() {
                 ) : (
                   <Chip
                     icon={<PendingActionsRoundedIcon />}
-                    label="Đã nộp bản tự đánh giá"
+                    label="Đang trong kỳ thực hiện & đánh giá"
                     color="warning"
                     size="small"
                     sx={{ fontWeight: 600 }}
@@ -480,22 +647,22 @@ export default function PersonalKPIView() {
                 )}
               </Box>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                Phòng duyệt: <strong>90/100</strong> • Ban duyệt: <strong>{agencyApproval.isApproved ? '91/100' : 'Chờ duyệt'}</strong>
+                Hạn gửi đánh giá: 31/12/2026
               </Typography>
             </CardContent>
           </Card>
         </Grid>
       </Grid>
 
-      {/* KPI Details Table */}
-      <Card variant="outlined" sx={{ borderRadius: 2, mb: 3 }}>
+      {/* Main KPI Task Data Table */}
+      <Card variant="outlined" sx={{ borderRadius: 2, overflow: 'hidden' }}>
         <Box
           sx={{
-            p: 2,
+            p: 2.5,
             display: 'flex',
-            flexDirection: { xs: 'column', sm: 'row' },
+            flexDirection: { xs: 'column', md: 'row' },
             justifyContent: 'space-between',
-            alignItems: { xs: 'flex-start', sm: 'center' },
+            alignItems: { xs: 'flex-start', md: 'center' },
             gap: 2,
             borderBottom: '1px solid',
             borderColor: 'divider',
@@ -503,10 +670,10 @@ export default function PersonalKPIView() {
         >
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Danh sách Chỉ tiêu KPI & Nhiệm vụ Cá nhân được phân công
+              Danh sách Chỉ tiêu KPI & Báo cáo Tiến độ Nhiệm vụ
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Bao gồm nhiệm vụ cấp trên giao và nhiệm vụ tự đề xuất chờ phê duyệt
+              Nhập số liệu thực tế và link tài liệu minh chứng để hệ thống tự động tính điểm
             </Typography>
           </Box>
 
@@ -567,34 +734,34 @@ export default function PersonalKPIView() {
             placeholder="Tìm kiếm chỉ tiêu, nhiệm vụ..."
             value={searchTerm}
             onChange={(e) => { setSearchTerm(e.target.value); setPage(0); }}
-            sx={{ width: { xs: '100%', sm: 300 } }}
+            sx={{ width: { xs: '100%', sm: 320 } }}
           />
           <Typography variant="caption" color="text.secondary">
             Hiển thị {paginatedKPIs.length} / {filteredKPIs.length} bản ghi
           </Typography>
         </Box>
 
-        <TableContainer component={Paper} elevation={0}>
-          <Table sx={{ minWidth: 900 }}>
-            <TableHead sx={{ bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : '#f8fafc') }}>
-              <TableRow>
-                <TableCell padding="checkbox" align="center" sx={{ width: 48 }}>
+        <TableContainer>
+          <Table sx={{ minWidth: 950 }} aria-label="personal kpi data table">
+            <TableHead>
+              <TableRow sx={{ bgcolor: 'action.hover' }}>
+                <TableCell padding="checkbox" align="center">
                   <Checkbox
                     indeterminate={selectedTaskIds.length > 0 && selectedTaskIds.length < eligibleToSendTasks.length}
                     checked={eligibleToSendTasks.length > 0 && selectedTaskIds.length === eligibleToSendTasks.length}
                     onChange={handleSelectAll}
                     disabled={eligibleToSendTasks.length === 0}
-                    title="Chọn tất cả nhiệm vụ đã tự chấm để gửi đánh giá"
+                    title="Chọn tất cả nhiệm vụ đã tự chấm để gửi cấp trên"
                   />
                 </TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 80 }}>Mã</TableCell>
-                <TableCell sx={{ fontWeight: 700, minWidth: 220 }}>Nội dung chỉ tiêu / Nhiệm vụ</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 80 }} align="center">Trọng số</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 170 }}>Tiến độ thực hiện</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Điểm tự chấm</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Trưởng phòng</TableCell>
-                <TableCell sx={{ fontWeight: 700, minWidth: 150 }}>Trạng thái & Minh chứng</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 150 }} align="center">Thao tác</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Tên nhiệm vụ</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Chỉ tiêu (Target)</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Thực tế (Actual)</TableCell>
+                <TableCell sx={{ fontWeight: 700, minWidth: 140 }}>Tiến độ %</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Điểm KPI Tự động</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Link Minh chứng</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Trạng thái</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Hành động</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -602,21 +769,26 @@ export default function PersonalKPIView() {
                 <TableRow>
                   <TableCell colSpan={9} sx={{ textAlign: 'center', py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
-                      Chưa có nhiệm vụ hoặc KPI nào được giao cho bạn trong kỳ này.
+                      Chưa có nhiệm vụ hoặc KPI nào được phân công cho bạn trong kỳ này.
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
                 paginatedKPIs.map((kpi) => {
-                  const isPending = kpi.approvalStatus === 'Chờ duyệt';
+                  const isPending = kpi.approvalStatus === 'Chờ duyệt' || kpi.status === 'Chờ duyệt';
                   const isSelfEvaluated = kpi.status === 'Đã tự chấm';
                   const isSubmitted = kpi.status === 'Đã gửi đánh giá';
                   const isApproved = kpi.status === 'Đã duyệt';
                   const isProgressLocked = isSelfEvaluated || isSubmitted || isApproved;
-                  const canSelfScore = kpi.progress === 100 && !isPending;
+                  const canSelfScore = kpi.progress === 100 && !isPending && !isProgressLocked;
+
+                  const isUrl = Boolean(
+                    kpi.proofUrl && (kpi.proofUrl.startsWith('http://') || kpi.proofUrl.startsWith('https://'))
+                  );
 
                   return (
                     <TableRow key={kpi.id} hover selected={selectedTaskIds.includes(kpi.id)}>
+                      {/* Checkbox */}
                       <TableCell padding="checkbox" align="center">
                         <Checkbox
                           checked={selectedTaskIds.includes(kpi.id)}
@@ -625,20 +797,35 @@ export default function PersonalKPIView() {
                           title={isSelfEvaluated ? 'Chọn để gửi lên cấp trên' : 'Chỉ có thể chọn nhiệm vụ đã tự chấm'}
                         />
                       </TableCell>
+
+                      {/* Tên nhiệm vụ */}
                       <TableCell>
-                        <Chip label={kpi.code} size="small" variant="outlined" sx={{ fontWeight: 600, fontSize: '0.75rem' }} />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {kpi.title}
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Chip label={kpi.code} size="small" variant="outlined" sx={{ fontWeight: 600, fontSize: '0.72rem' }} />
+                          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                            {kpi.title}
+                          </Typography>
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                          Trọng số: {kpi.weight}% • Hạn: {kpi.deadline || '2026-12-31'}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          Chỉ tiêu: {kpi.target} • Hạn: {kpi.deadline}
-                        </Typography>
                       </TableCell>
+
+                      {/* Chỉ tiêu (Target) */}
                       <TableCell align="center">
-                        <Chip label={`${kpi.weight}%`} size="small" color="primary" variant="filled" sx={{ fontWeight: 600 }} />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          {kpi.targetQty} {kpi.unit}
+                        </Typography>
                       </TableCell>
+
+                      {/* Thực tế (Actual) */}
+                      <TableCell align="center">
+                        <Typography variant="body2" sx={{ fontWeight: 700, color: kpi.currentValue > 0 ? 'primary.main' : 'text.secondary' }}>
+                          {kpi.currentValue} {kpi.unit}
+                        </Typography>
+                      </TableCell>
+
+                      {/* Tiến độ % */}
                       <TableCell>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <Box sx={{ width: '100%', mr: 1 }}>
@@ -653,114 +840,121 @@ export default function PersonalKPIView() {
                             {kpi.progress}%
                           </Typography>
                         </Box>
-                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                          Đạt: {kpi.currentValue} {kpi.unit}
-                        </Typography>
                       </TableCell>
+
+                      {/* Điểm KPI Tự động */}
                       <TableCell align="center">
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 700,
-                            color: kpi.selfScore !== null ? 'info.main' : 'text.disabled',
-                          }}
-                        >
-                          {kpi.selfScore !== null ? `${kpi.selfScore}` : '-'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="center">
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 700,
-                            color: kpi.managerScore !== null ? 'warning.main' : 'text.disabled',
-                          }}
-                        >
-                          {kpi.managerScore !== null ? `${kpi.managerScore}` : '-'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
                         <Chip
-                          label={kpi.status}
+                          label={`${kpi.autoScore.toFixed(1)} / ${kpi.baseScore.toFixed(1)} đ`}
                           size="small"
-                          color={
-                            kpi.status === 'Đã duyệt'
-                              ? 'success'
-                              : kpi.status === 'Đã gửi đánh giá'
-                              ? 'info'
-                              : kpi.status === 'Đã tự chấm'
-                              ? 'secondary'
-                              : kpi.status === 'Đã hoàn thành'
-                              ? 'primary'
-                              : kpi.status === 'Chờ duyệt'
-                              ? 'warning'
-                              : 'default'
-                          }
-                          sx={{ fontWeight: 600, height: 22, fontSize: '0.7rem', mb: 0.5 }}
+                          color={kpi.autoScore >= kpi.baseScore ? 'success' : kpi.autoScore > 0 ? 'primary' : 'default'}
+                          variant="outlined"
+                          sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                         />
-                        {kpi.proofUrl && (
-                          <Typography variant="caption" color="primary.main" sx={{ display: 'block', fontWeight: 600 }}>
-                            {kpi.proofUrl}
-                          </Typography>
-                        )}
-                        {kpi.proofNote && (
-                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontStyle: 'italic', mt: 0.25 }}>
-                            {kpi.proofNote}
+                      </TableCell>
+
+                      {/* Link Minh chứng */}
+                      <TableCell align="center">
+                        {kpi.proofUrl ? (
+                          isUrl ? (
+                            <Tooltip title={kpi.proofUrl} arrow>
+                              <Button
+                                size="small"
+                                variant="text"
+                                color="primary"
+                                endIcon={<OpenInNewRoundedIcon sx={{ fontSize: 14 }} />}
+                                href={kpi.proofUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                sx={{ textTransform: 'none', fontSize: '0.75rem', fontWeight: 600, p: 0.5 }}
+                              >
+                                Xem minh chứng
+                              </Button>
+                            </Tooltip>
+                          ) : (
+                            <Tooltip title={kpi.proofUrl} arrow>
+                              <Chip
+                                icon={<AttachFileRoundedIcon sx={{ fontSize: 14 }} />}
+                                label={kpi.proofUrl.length > 18 ? `${kpi.proofUrl.substring(0, 18)}...` : kpi.proofUrl}
+                                size="small"
+                                variant="filled"
+                                sx={{ fontSize: '0.72rem', maxWidth: 140 }}
+                              />
+                            </Tooltip>
+                          )
+                        ) : (
+                          <Typography variant="caption" color="text.disabled">
+                            -
                           </Typography>
                         )}
                       </TableCell>
+
+                      {/* Trạng thái */}
+                      <TableCell align="center">
+                        {kpi.status === 'Chờ duyệt' && (
+                          <Chip label="Chờ duyệt" size="small" color="warning" sx={{ fontWeight: 600 }} />
+                        )}
+                        {kpi.status === 'Đang tiến hành' && (
+                          <Chip label="Đang tiến hành" size="small" color="info" sx={{ fontWeight: 600 }} />
+                        )}
+                        {kpi.status === 'Đã hoàn thành' && (
+                          <Chip label="Đã hoàn thành" size="small" color="success" sx={{ fontWeight: 600 }} />
+                        )}
+                        {kpi.status === 'Đã tự chấm' && (
+                          <Chip label="Đã tự chấm" size="small" color="secondary" sx={{ fontWeight: 600 }} />
+                        )}
+                        {kpi.status === 'Đã gửi đánh giá' && (
+                          <Chip label="Đã gửi đánh giá" size="small" color="warning" sx={{ fontWeight: 600 }} />
+                        )}
+                        {kpi.status === 'Đã duyệt' && (
+                          <Chip label="Đã duyệt" size="small" color="success" sx={{ fontWeight: 600 }} />
+                        )}
+                        {!['Chờ duyệt', 'Đang tiến hành', 'Đã hoàn thành', 'Đã tự chấm', 'Đã gửi đánh giá', 'Đã duyệt'].includes(kpi.status) && (
+                          <Chip label={kpi.status || 'Đang tiến hành'} size="small" color="default" sx={{ fontWeight: 600 }} />
+                        )}
+                      </TableCell>
+
+                      {/* Hành động */}
                       <TableCell align="center">
                         <Stack direction="row" spacing={1} justifyContent="center" alignItems="center">
+                          {/* Nút Cập nhật tiến độ */}
                           <Tooltip
                             title={
-                              isProgressLocked
-                                ? 'Nhiệm vụ đã tự chấm điểm, không thể chỉnh sửa tiến độ'
-                                : isPending
-                                ? 'Nhiệm vụ đang chờ phê duyệt'
-                                : canUpdate
-                                ? 'Cập nhật tiến độ hoàn thành'
-                                : 'Không có quyền'
+                              isPending
+                                ? 'Nhiệm vụ tự đề xuất đang chờ cấp trên phê duyệt, không thể cập nhật tiến độ'
+                                : isProgressLocked
+                                ? 'Đã tự chấm/đã duyệt, không thể sửa'
+                                : 'Cập nhật số liệu thực tế & minh chứng'
                             }
                           >
                             <span>
                               <Button
                                 size="small"
                                 variant="outlined"
-                                color="info"
-                                disabled={!canUpdate || isPending || isProgressLocked}
+                                color="primary"
                                 startIcon={<EditRoundedIcon />}
                                 onClick={() => handleOpenProgress(kpi)}
-                                sx={{ textTransform: 'none', px: 1, py: 0.25, fontSize: '0.75rem' }}
+                                disabled={!canUpdate || isProgressLocked || isPending}
+                                sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', borderRadius: 1.5 }}
                               >
-                                Tiến độ
+                                Cập nhật
                               </Button>
                             </span>
                           </Tooltip>
 
-                          {/* Nút tự chấm CHỈ HIỆN khi tiến độ là 100% */}
+                          {/* Nút Tự chấm: Chỉ hiện khi tiến độ đạt 100% và chưa tự chấm */}
                           {canSelfScore && (
-                            <Tooltip
-                              title={
-                                isSubmitted || isApproved
-                                  ? 'Đã gửi đánh giá lên cấp trên'
-                                  : canSelfEval
-                                  ? 'Tự chấm điểm đánh giá khi đã hoàn thành 100%'
-                                  : 'Không có quyền'
-                              }
-                            >
-                              <span>
-                                <Button
-                                  size="small"
-                                  variant={isSelfEvaluated ? 'outlined' : 'contained'}
-                                  color="primary"
-                                  disabled={!canSelfEval || isSubmitted || isApproved}
-                                  startIcon={<RateReviewRoundedIcon />}
-                                  onClick={() => handleOpenEval(kpi)}
-                                  sx={{ textTransform: 'none', px: 1, py: 0.25, fontSize: '0.75rem' }}
-                                >
-                                  {isSelfEvaluated ? 'Sửa điểm' : 'Tự chấm'}
-                                </Button>
-                              </span>
+                            <Tooltip title="Tiến độ đạt 100% - Bấm để tự chấm điểm">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="warning"
+                                startIcon={<RateReviewRoundedIcon />}
+                                onClick={() => handleOpenEval(kpi)}
+                                sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', borderRadius: 1.5 }}
+                              >
+                                Tự chấm
+                              </Button>
                             </Tooltip>
                           )}
                         </Stack>
@@ -772,61 +966,51 @@ export default function PersonalKPIView() {
             </TableBody>
           </Table>
         </TableContainer>
+
         <TablePagination
+          rowsPerPageOptions={[5, 10, 25]}
           component="div"
           count={filteredKPIs.length}
+          rowsPerPage={rowsPerPage}
           page={page}
           onPageChange={(e, newPage) => setPage(newPage)}
-          rowsPerPage={rowsPerPage}
           onRowsPerPageChange={(e) => {
             setRowsPerPage(parseInt(e.target.value, 10));
             setPage(0);
           }}
-          rowsPerPageOptions={[5, 10, 25, 50]}
-          labelRowsPerPage="Số dòng mỗi trang:"
+          labelRowsPerPage="Số dòng / trang:"
+          labelDisplayedRows={({ from, to, count }) => `${from}-${to} trên tổng ${count}`}
         />
       </Card>
 
-      {/* RBAC Boundary Note */}
-      <Card variant="outlined" sx={{ borderRadius: 2, p: 2, bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.02)' : '#fafafa') }}>
-        <Stack direction="row" spacing={1.5} alignItems="center">
-          <LockRoundedIcon color="disabled" />
-          <Box>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-              Hạn mức quyền hạn (RBAC Boundary)
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Công chức chuyên viên chỉ được quyền xem & tự đánh giá KPI của chính mình. Quyền chấm điểm đồng nghiệp,
-              tổng hợp KPI phòng thuộc về <strong>Trưởng / Phó phòng</strong>. Quyền thẩm định & phê duyệt toàn đơn vị
-              thuộc về <strong>Lãnh đạo Ban / Hội đồng đánh giá</strong>.
-            </Typography>
-          </Box>
-        </Stack>
-      </Card>
-
-      {/* Dialog: Tự đề xuất KPI mới */}
-      <Dialog open={proposeDialogOpen} onClose={() => setProposeDialogOpen(false)} maxWidth="sm" fullWidth>
+      {/* Propose KPI Dialog */}
+      <Dialog
+        open={proposeDialogOpen}
+        onClose={() => setProposeDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
         <DialogTitle sx={{ fontWeight: 700 }}>
-          Tự đề xuất KPI & Nhiệm vụ Cá nhân
+          Tự đề xuất KPI / Nhiệm vụ công tác mới
         </DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Đề xuất này sẽ được gửi lên Cấp quản lý trực tiếp phê duyệt trước khi đưa vào bảng KPI chính thức.
+            Đề xuất chỉ tiêu, nhiệm vụ công tác gắn liền với vị trí việc làm hoặc mục tiêu OKR của phòng. Sau khi gửi, nhiệm vụ sẽ ở trạng thái <strong>Chờ duyệt</strong> để cấp quản lý phê duyệt.
           </Typography>
 
           <TextField
             select
             fullWidth
-            label="Gán vào Mục tiêu Trọng tâm (OKR)"
+            label="Liên kết Mục tiêu chiến lược (OKR) của Ban / Phòng"
             InputLabelProps={{ shrink: true }}
-            value={proposeForm.okrId || ''}
+            value={proposeForm.okrId}
             onChange={(e) => setProposeForm({ ...proposeForm, okrId: e.target.value })}
             sx={{ mb: 2 }}
           >
-            <MenuItem value="">-- Không gán OKR (Nhiệm vụ Thường xuyên VTVL) --</MenuItem>
-            {okrs.map((o) => (
-              <MenuItem key={o.id} value={o.id}>
-                {o.code}: {o.title}
+            <MenuItem value="">-- Không gắn OKR (Nhiệm vụ thường xuyên) --</MenuItem>
+            {okrs.map((okr) => (
+              <MenuItem key={okr.id} value={okr.id}>
+                [{okr.code}] {okr.title}
               </MenuItem>
             ))}
           </TextField>
@@ -886,7 +1070,7 @@ export default function PersonalKPIView() {
         </DialogActions>
       </Dialog>
 
-      {/* Dialog 1: Cập nhật tiến độ */}
+      {/* Dialog: Báo cáo Tiến độ (Khối lượng thực tế + Link Minh chứng) */}
       <Dialog
         open={progressDialog.open}
         onClose={() => setProgressDialog({ ...progressDialog, open: false })}
@@ -894,59 +1078,73 @@ export default function PersonalKPIView() {
         fullWidth
       >
         <DialogTitle sx={{ fontWeight: 700 }}>
-          Cập nhật tiến độ thực hiện: {progressDialog.kpi?.code}
+          Báo cáo Tiến độ thực hiện: {progressDialog.kpi?.code}
         </DialogTitle>
         <DialogContent dividers>
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-              Chỉ tiêu: {progressDialog.kpi?.title}
+          <Box sx={{ mb: 2.5, p: 1.5, bgcolor: 'action.hover', borderRadius: 2 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
+              {progressDialog.kpi?.title}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Mục tiêu giao: {progressDialog.kpi?.target} • Trọng số: {progressDialog.kpi?.weight}%
-            </Typography>
+            <Stack direction="row" spacing={2} sx={{ mt: 0.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                Chỉ tiêu giao: <strong>{progressDialog.kpi?.targetQty} {progressDialog.kpi?.unit}</strong>
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Trọng số điểm tối đa: <strong>{progressDialog.kpi?.baseScore?.toFixed(1)} điểm</strong>
+              </Typography>
+            </Stack>
           </Box>
 
-          <Box sx={{ mb: 3 }}>
+          <TextField
+            fullWidth
+            label={`Khối lượng / Số lượng sản phẩm thực tế đã hoàn thành (${progressDialog.kpi?.unit || 'Hồ sơ'})`}
+            type="number"
+            value={progressDialog.currentValue}
+            onChange={(e) => {
+              const val = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
+              const numVal = Number(val) || 0;
+              const target = Number(progressDialog.kpi?.targetQty) || 1;
+              const autoProg = Math.min(100, Math.round((numVal / target) * 100));
+              setProgressDialog({
+                ...progressDialog,
+                currentValue: val,
+                progress: autoProg,
+              });
+            }}
+            helperText={`Hệ thống tự động tính: Đạt ${progressDialog.progress}% chỉ tiêu • Điểm KPI tự động: ${calculateTaskScore(progressDialog.currentValue, progressDialog.kpi?.targetQty || 1, progressDialog.kpi?.baseScore || 10).toFixed(1)} / ${(progressDialog.kpi?.baseScore || 10).toFixed(1)} điểm`}
+            sx={{ mb: 2.5 }}
+          />
+
+          <Box sx={{ mb: 2.5 }}>
             <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
-              Tỷ lệ hoàn thành (%): {progressDialog.progress}%
+              Tiến độ hoàn thành tự động tính: <strong>{progressDialog.progress}%</strong>
             </Typography>
-            <Slider
+            <LinearProgress
+              variant="determinate"
               value={progressDialog.progress}
-              onChange={(e, val) => setProgressDialog({ ...progressDialog, progress: val })}
-              valueLabelDisplay="auto"
-              step={5}
-              marks
-              min={0}
-              max={100}
+              color={progressDialog.progress >= 90 ? 'success' : progressDialog.progress >= 70 ? 'primary' : 'warning'}
+              sx={{ height: 8, borderRadius: 4 }}
             />
           </Box>
 
           <TextField
             fullWidth
-            label={`Số liệu thực tế đạt được (${progressDialog.kpi?.unit})`}
-            type="number"
-            value={progressDialog.currentValue}
-            onChange={(e) => setProgressDialog({ ...progressDialog, currentValue: e.target.value })}
-            sx={{ mb: 2 }}
-          />
-
-          <TextField
-            fullWidth
-            label="File / Tên tài liệu minh chứng"
+            label="Link tài liệu minh chứng (Google Drive link hoặc tên file/báo cáo)"
             value={progressDialog.proofUrl}
             onChange={(e) => setProgressDialog({ ...progressDialog, proofUrl: e.target.value })}
-            placeholder="Ví dụ: ToTrinh_KeHoachNganSach_Q3.pdf"
-            sx={{ mb: 2 }}
+            placeholder="https://drive.google.com/... hoặc ToTrinh_NganSach_Q3.pdf"
+            helperText="Dán đường dẫn Google Drive hoặc văn bản nghiệm thu chứng minh kết quả"
+            sx={{ mb: 2.5 }}
           />
 
           <TextField
             fullWidth
             multiline
             rows={3}
-            label="Giải trình tiến độ & kết quả thực hiện"
+            label="Ghi chú giải trình kết quả thực hiện (Tùy chọn)"
             value={progressDialog.proofNote}
             onChange={(e) => setProgressDialog({ ...progressDialog, proofNote: e.target.value })}
-            placeholder="Nêu rõ nội dung công việc đã triển khai, khó khăn vướng mắc nếu có..."
+            placeholder="Nêu tóm tắt công việc đã triển khai, chất lượng sản phẩm đầu ra..."
           />
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
@@ -963,12 +1161,12 @@ export default function PersonalKPIView() {
             color="primary"
             sx={{ textTransform: 'none', fontWeight: 600, color: '#fff' }}
           >
-            Lưu cập nhật tiến độ
+            Lưu báo cáo tiến độ
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Dialog 2: Tự đánh giá KPI */}
+      {/* Dialog: Tự đánh giá, chấm điểm KPI */}
       <Dialog
         open={evalDialog.open}
         onClose={() => setEvalDialog({ ...evalDialog, open: false })}

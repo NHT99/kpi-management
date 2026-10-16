@@ -11,6 +11,7 @@ export const NAV_TABS = {
   AGENCY: 'agency',                     // Thẩm định & Phê duyệt cấp Ban (Lãnh đạo Ban)
   RBAC_MATRIX: 'rbac-matrix',           // Ma trận phân quyền RBAC
   OVERVIEW: 'overview',                 // Tổng quan biểu đồ
+  AUDIT_LOG: 'audit-log',               // Nhật ký hệ thống & Audit Log (HR & Super Admin)
 };
 
 const NavigationContext = createContext(null);

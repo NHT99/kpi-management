@@ -23,12 +23,14 @@ export const PERMISSIONS = {
 
   // 5. Tổng hợp kết quả cá nhân và tập thể
   KPI_PERSONAL_VIEW: 'kpi:personal:view',
+  KPI_PERSONAL_VIEW_OWN: 'kpi:personal:view',
   KPI_DEPT_VIEW_SUMMARY: 'kpi:dept:view_summary',
   KPI_AGENCY_VIEW_ALL: 'kpi:agency:view_all',
 
   // 6. Phân quyền người sử dụng và phê duyệt kết quả (Workflow 3 cấp)
   RBAC_MANAGE: 'rbac:manage',
   KPI_DEPT_SCORE_STAFF: 'kpi:dept:score_staff',
+  KPI_DEPT_EVALUATE_STAFF: 'kpi:dept:score_staff',
   KPI_AGENCY_APPRAISE: 'kpi:agency:appraise',
   KPI_AGENCY_APPROVE: 'kpi:agency:approve',
 

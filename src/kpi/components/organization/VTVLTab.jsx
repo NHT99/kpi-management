@@ -34,6 +34,7 @@ import { useToast } from '../../hooks/useToast';
 import { INITIAL_DEPARTMENTS, INITIAL_VTVLS, INITIAL_STAFFS } from '../../data/organizationData';
 import { useAuth } from '../../../rbac/AuthContext';
 import { ROLES } from '../../../rbac/roles';
+import { logAction } from '../../utils/auditLogger';
 
 const VTVL_GROUPS = [
   'Nhóm Lãnh đạo, quản lý',
@@ -44,7 +45,7 @@ export default function VTVLTab() {
   const [vtvls, setVtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
-  const { role } = useAuth();
+  const { currentUser, role } = useAuth();
   const { showToast, ToastComponent } = useToast();
 
   const isBanLeader = role === ROLES.BAN_LEADER;
@@ -130,6 +131,12 @@ export default function VTVLTab() {
       setVtvls((prev) =>
         prev.map((v) => (v.id === formDialog.item.id ? { ...v, ...formData } : v))
       );
+      logAction(
+        'Sửa đổi VTVL',
+        currentUser,
+        `Cập nhật vị trí việc làm "${formData.title}" (${formData.code}) - ${formData.group}`,
+        'Quản lý VTVL'
+      );
       showToast(`Đã cập nhật VTVL "${formData.title}" thành công!`, 'success');
     } else {
       const newItem = {
@@ -137,6 +144,12 @@ export default function VTVLTab() {
         ...formData,
       };
       setVtvls((prev) => [newItem, ...prev]);
+      logAction(
+        'Thêm mới VTVL',
+        currentUser,
+        `Thêm mới vị trí việc làm "${formData.title}" (${formData.code}) - ${formData.group}`,
+        'Quản lý VTVL'
+      );
       showToast(`Đã thêm mới VTVL "${formData.title}" thành công!`, 'success');
     }
 
@@ -147,13 +160,26 @@ export default function VTVLTab() {
     if (!deleteDialog.item) return;
 
     setVtvls((prev) => prev.filter((v) => v.id !== deleteDialog.item.id));
+    logAction(
+      'Xóa VTVL',
+      currentUser,
+      `Xóa vị trí việc làm "${deleteDialog.item.title}" (${deleteDialog.item.code})`,
+      'Quản lý VTVL'
+    );
     showToast(`Đã xóa VTVL "${deleteDialog.item.title}" thành công!`, 'success');
     setDeleteDialog({ open: false, item: null });
   };
 
   const handleApproveSingle = (id) => {
+    const target = vtvls.find((v) => v.id === id);
     setVtvls((prev) =>
       prev.map((v) => (v.id === id ? { ...v, status: 'APPROVED' } : v))
+    );
+    logAction(
+      'Phê duyệt VTVL',
+      currentUser,
+      `Phê duyệt vị trí việc làm "${target?.title || id}" (${target?.code || ''})`,
+      'Quản lý VTVL'
     );
     showToast('Đã phê duyệt khung VTVL thành công!', 'success');
   };
@@ -161,6 +187,12 @@ export default function VTVLTab() {
   const handleApproveAllPending = () => {
     setVtvls((prev) =>
       prev.map((v) => ({ ...v, status: 'APPROVED' }))
+    );
+    logAction(
+      'Phê duyệt VTVL',
+      currentUser,
+      `Phê duyệt toàn bộ danh mục VTVL chờ duyệt của toàn cơ quan`,
+      'Quản lý VTVL'
     );
     showToast('Đã phê duyệt toàn bộ danh mục VTVL chờ duyệt thành công!', 'success');
   };

@@ -31,8 +31,11 @@ import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useToast } from '../../hooks/useToast';
 import { INITIAL_DEPARTMENTS, INITIAL_VTVLS, INITIAL_STAFFS } from '../../data/organizationData';
 import { ROLES, ROLE_DETAILS } from '../../../rbac/roles';
+import { useAuth } from '../../../rbac/AuthContext';
+import { logAction } from '../../utils/auditLogger';
 
 export default function CanBoTab() {
+  const { currentUser } = useAuth();
   const [staffs, setStaffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [vtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
@@ -152,6 +155,12 @@ export default function CanBoTab() {
       setStaffs((prev) =>
         prev.map((s) => (s.id === formDialog.item.id ? { ...s, ...formData } : s))
       );
+      logAction(
+        'Cập nhật cán bộ',
+        currentUser,
+        `Cập nhật hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Chức vụ: ${formData.title} - Role: ${formData.role}`,
+        'Quản lý Cán bộ'
+      );
       showToast(`Đã cập nhật hồ sơ cán bộ "${formData.name}" thành công!`, 'success');
     } else {
       const newStaff = {
@@ -159,6 +168,12 @@ export default function CanBoTab() {
         ...formData,
       };
       setStaffs((prev) => [newStaff, ...prev]);
+      logAction(
+        'Thêm mới cán bộ',
+        currentUser,
+        `Thêm mới hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${getDeptName(formData.deptId)} - Role: ${formData.role}`,
+        'Quản lý Cán bộ'
+      );
       showToast(`Đã thêm mới cán bộ "${formData.name}" thành công!`, 'success');
     }
 
@@ -169,6 +184,12 @@ export default function CanBoTab() {
     if (!deleteDialog.item) return;
 
     setStaffs((prev) => prev.filter((s) => s.id !== deleteDialog.item.id));
+    logAction(
+      'Xóa cán bộ',
+      currentUser,
+      `Xóa hồ sơ cán bộ "${deleteDialog.item.name}" (${deleteDialog.item.employeeCode})`,
+      'Quản lý Cán bộ'
+    );
     showToast(`Đã xóa hồ sơ cán bộ "${deleteDialog.item.name}" thành công!`, 'success');
     setDeleteDialog({ open: false, item: null });
   };

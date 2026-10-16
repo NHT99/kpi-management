@@ -30,7 +30,7 @@ export default function SelectContent() {
             textOverflow: 'ellipsis',
           }}
         >
-          KPI MANAGEMENT
+          BTCTU MANAGEMENT
         </Typography>
         <Typography
           variant="caption"
@@ -42,7 +42,7 @@ export default function SelectContent() {
             fontSize: '0.7rem',
           }}
         >
-          Hệ thống đánh giá RBAC
+          Hệ thống quản lí BTCTU
         </Typography>
       </Box>
     </Box>
