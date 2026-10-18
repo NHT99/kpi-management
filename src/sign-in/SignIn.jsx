@@ -23,6 +23,7 @@ import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import EmailRoundedIcon from '@mui/icons-material/EmailRounded';
+import AccountCircleRoundedIcon from '@mui/icons-material/AccountCircleRounded';
 import TouchAppRoundedIcon from '@mui/icons-material/TouchAppRounded';
 
 import AppTheme from '../shared-theme/AppTheme';
@@ -76,39 +77,39 @@ const SignInContainer = styled(Stack)(({ theme }) => ({
 export default function SignIn(props) {
   const { login } = useAuth();
 
-  const [email, setEmail] = useState('an.nguyenvan@kpi.gov.vn');
+  const [account, setAccount] = useState('cuong.nguyen');
   const [password, setPassword] = useState('password123');
   const [showPassword, setShowPassword] = useState(false);
 
-  const [emailError, setEmailError] = useState(false);
-  const [emailErrorMessage, setEmailErrorMessage] = useState('');
+  const [accountError, setAccountError] = useState(false);
+  const [accountErrorMessage, setAccountErrorMessage] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [passwordErrorMessage, setPasswordErrorMessage] = useState('');
   const [loginError, setLoginError] = useState('');
 
   const handleQuickFill = (user) => {
-    setEmail(user.email);
+    setAccount(user.username || user.email.split('@')[0]);
     setPassword(user.password || 'password123');
     setLoginError('');
-    setEmailError(false);
+    setAccountError(false);
     setPasswordError(false);
   };
 
   const validateInputs = () => {
     let isValid = true;
 
-    if (!email || !/\S+@\S+\.\S+/.test(email)) {
-      setEmailError(true);
-      setEmailErrorMessage('Vui lòng nhập địa chỉ email hợp lệ.');
+    if (!account || !account.trim()) {
+      setAccountError(true);
+      setAccountErrorMessage('Vui lòng nhập tên tài khoản.');
       isValid = false;
     } else {
-      setEmailError(false);
-      setEmailErrorMessage('');
+      setAccountError(false);
+      setAccountErrorMessage('');
     }
 
-    if (!password || password.length < 6) {
+    if (!password) {
       setPasswordError(true);
-      setPasswordErrorMessage('Mật khẩu phải có ít nhất 6 ký tự.');
+      setPasswordErrorMessage('Vui lòng nhập mật khẩu.');
       isValid = false;
     } else {
       setPasswordError(false);
@@ -126,7 +127,7 @@ export default function SignIn(props) {
       return;
     }
 
-    const result = login(email, password);
+    const result = login(account.trim(), password);
     if (!result.success) {
       setLoginError(result.error || 'Đăng nhập không thành công.');
     }
@@ -158,16 +159,16 @@ export default function SignIn(props) {
                 variant="h6"
                 sx={{ fontWeight: 800, lineHeight: 1.2, letterSpacing: '0.02rem' }}
               >
-                HỆ THỐNG ĐÁNH GIÁ KPI
+                HỆ THỐNG QUẢN LÍ BTCTU
               </Typography>
               <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                Cổng đánh giá xếp loại công chức, viên chức
+                Cổng quản lý BTCTU
               </Typography>
             </Box>
           </Box>
 
           {/* Quick-fill accounts for testing the 3 RBAC roles */}
-          <Box
+          {/* <Box
             sx={{
               p: 1.5,
               borderRadius: 2,
@@ -194,7 +195,7 @@ export default function SignIn(props) {
             <Stack spacing={1}>
               {MOCK_USERS.map((user) => {
                 const rDetails = ROLE_DETAILS[user.role];
-                const isSelected = email === user.email;
+                const isSelected = account === (user.username || user.email.split('@')[0]);
 
                 return (
                   <Button
@@ -235,14 +236,14 @@ export default function SignIn(props) {
                           mt: 0.25,
                         }}
                       >
-                        {user.title} • {user.email}
+                        {user.title} • Tài khoản: <strong>{user.username || user.email.split('@')[0]}</strong>
                       </Typography>
                     </Box>
                   </Button>
                 );
               })}
             </Stack>
-          </Box>
+          </Box> */}
 
           {/* Login Error Alert */}
           {loginError && (
@@ -264,22 +265,22 @@ export default function SignIn(props) {
             }}
           >
             <FormControl>
-              <FormLabel htmlFor="email" sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
-                Email công vụ được cấp
+              <FormLabel htmlFor="account" sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                Tài khoản đăng nhập
               </FormLabel>
               <TextField
-                error={emailError}
-                helperText={emailErrorMessage}
-                id="email"
-                type="email"
-                name="email"
-                value={email}
+                error={accountError}
+                helperText={accountErrorMessage}
+                id="account"
+                type="text"
+                name="account"
+                value={account}
                 onChange={(e) => {
-                  setEmail(e.target.value);
-                  setEmailError(false);
+                  setAccount(e.target.value);
+                  setAccountError(false);
                 }}
-                placeholder="an.nguyenvan@kpi.gov.vn"
-                autoComplete="email"
+                placeholder="Nhập tên tài khoản (Ví dụ: cuong.nguyen, lan.pham, truong.nguyen...)"
+                autoComplete="username"
                 required
                 fullWidth
                 size="small"
@@ -288,7 +289,7 @@ export default function SignIn(props) {
                   input: {
                     startAdornment: (
                       <InputAdornment position="start">
-                        <EmailRoundedIcon fontSize="small" color="action" />
+                        <AccountCircleRoundedIcon fontSize="small" color="action" />
                       </InputAdornment>
                     ),
                   },

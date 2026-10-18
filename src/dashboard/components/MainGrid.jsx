@@ -9,6 +9,7 @@ import KPIOverviewView from '../../kpi/components/KPIOverviewView';
 import OrganizationManagement from '../../kpi/components/OrganizationManagement';
 import KPIManagement from '../../kpi/components/KPIManagement';
 import AuditLogView from '../../kpi/components/AuditLogView';
+import AccountManagementView from '../../kpi/components/AccountManagementView';
 
 export default function MainGrid() {
   const { activeTab } = useNavigation();
@@ -23,6 +24,7 @@ export default function MainGrid() {
       {activeTab === NAV_TABS.RBAC_MATRIX && <RBACMatrixView />}
       {activeTab === NAV_TABS.OVERVIEW && <KPIOverviewView />}
       {activeTab === NAV_TABS.AUDIT_LOG && <AuditLogView />}
+      {activeTab === NAV_TABS.ACCOUNT_MANAGEMENT && <AccountManagementView />}
 
       {/*<Copyright sx={{ my: 4 }} />*/}
     </Box>

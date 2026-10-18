@@ -15,7 +15,7 @@ export function AuthProvider({ children }) {
       if (saved) {
         const parsed = JSON.parse(saved);
         const exists = MOCK_USERS.find((u) => u.id === parsed.id);
-        if (exists) return exists;
+        return exists || parsed;
       }
     } catch {
       // Ignore parse error
@@ -29,8 +29,8 @@ export function AuthProvider({ children }) {
   const roleDetails = role ? (ROLE_DETAILS[role] || ROLE_DETAILS[ROLES.SPECIALIST]) : null;
   const permissions = useMemo(() => (role ? (ROLE_PERMISSIONS[role] || []) : []), [role]);
 
-  const login = (email, password) => {
-    const result = authenticateUser(email, password);
+  const login = (account, password) => {
+    const result = authenticateUser(account, password);
     if (result.success) {
       setCurrentUser(result.user);
       try {

@@ -47,14 +47,11 @@ import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/orga
 import { INITIAL_DEPT_STAFF } from '../kpiData';
 import { useToast } from '../hooks/useToast';
 import { calculateTotalKPIScore, determineGrade } from '../utils/scoringEngine';
+import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { logAction } from '../utils/auditLogger';
+import * as XLSX from 'xlsx';
 
-const EVALUATION_PERIODS = [
-  { value: 'Q1_2026', label: 'Quý I / 2026' },
-  { value: 'Q2_2026', label: 'Quý II / 2026' },
-  { value: 'Q3_2026', label: 'Quý III / 2026' },
-  { value: 'Q4_2026', label: 'Quý IV / 2026' },
-  { value: 'YEAR_2026', label: 'Cả năm 2026' },
-];
+const { allOptions: EVALUATION_PERIODS } = getFullYearQuarterOptions();
 
 export default function KPIOverviewView() {
   const { currentUser, role } = useAuth();
@@ -72,8 +69,8 @@ export default function KPIOverviewView() {
     role === ROLES.HR_ADMIN ||
     role === ROLES.SUPER_ADMIN;
 
-  // Selected filters
-  const [selectedPeriod, setSelectedPeriod] = useState('Q3_2026');
+  // Selected filters - Mặc định Dashboard show dữ liệu cả năm
+  const [selectedPeriod, setSelectedPeriod] = useState('YEAR_2026');
   const [docModalOpen, setDocModalOpen] = useState(false);
   // If DEPT_HEAD, lock to currentUser.deptId (fallback to DEP_TCD)
   const defaultDept = isDeptHead ? currentUser.deptId || 'DEP_TCD' : 'ALL';
@@ -162,8 +159,26 @@ export default function KPIOverviewView() {
     });
   }, [allAvailableStaffs, assignedTasks, evaluations, selectedPeriod, departments, vtvls]);
 
+  const selectedPeriodObj = EVALUATION_PERIODS.find((p) => p.value === selectedPeriod);
+  const selectedPeriodLabel = selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod;
+
+  // Kiểm tra kỳ đánh giá đã có kết quả hay chưa:
+  // - Cả năm (YEAR_2026): hiển thị dữ liệu của các quý đã có kết quả (mặc định)
+  // - Quý đã có kết quả (Q3_2026): hiển thị dữ liệu
+  // - Quý đang diễn ra hoặc chưa diễn ra: hiển thị toàn bộ StatCard là 0, biểu đồ trống, bảng trống
+  const hasEvaluationData = useMemo(() => {
+    if (selectedPeriod === 'YEAR_2026' || selectedPeriod === 'Q3_2026') {
+      return true;
+    }
+    return evaluations.some((e) => e.period === selectedPeriod);
+  }, [selectedPeriod, evaluations]);
+
   // Filtered staff records for current view (after Dept and Search filter)
   const filteredStaffList = useMemo(() => {
+    if (!hasEvaluationData) {
+      return [];
+    }
+
     let list = allStaffCalculatedData;
 
     // Apply Department filter
@@ -187,7 +202,7 @@ export default function KPIOverviewView() {
     }
 
     return list;
-  }, [allStaffCalculatedData, isDeptHead, currentUser.deptId, selectedDeptId, searchTerm]);
+  }, [hasEvaluationData, allStaffCalculatedData, isDeptHead, currentUser.deptId, selectedDeptId, searchTerm]);
 
   // KHỐI 2: Summary Stats Calculations
   const totalStaffCount = filteredStaffList.length;
@@ -196,28 +211,31 @@ export default function KPIOverviewView() {
   const countHoanThanh = filteredStaffList.filter((s) => s.grade === 'Hoàn thành nhiệm vụ').length;
   const countKhongHT = filteredStaffList.filter((s) => s.grade === 'Không hoàn thành nhiệm vụ').length;
 
-  const pctXuatSac = totalStaffCount > 0 ? ((countXuatSac / totalStaffCount) * 100).toFixed(1) : 0;
-  const pctTot = totalStaffCount > 0 ? ((countTot / totalStaffCount) * 100).toFixed(1) : 0;
-  const pctHoanThanh = totalStaffCount > 0 ? ((countHoanThanh / totalStaffCount) * 100).toFixed(1) : 0;
-  const pctKhongHT = totalStaffCount > 0 ? ((countKhongHT / totalStaffCount) * 100).toFixed(1) : 0;
+  const pctXuatSac = totalStaffCount > 0 ? ((countXuatSac / totalStaffCount) * 100).toFixed(1) : '0.0';
+  const pctTot = totalStaffCount > 0 ? ((countTot / totalStaffCount) * 100).toFixed(1) : '0.0';
+  const pctHoanThanh = totalStaffCount > 0 ? ((countHoanThanh / totalStaffCount) * 100).toFixed(1) : '0.0';
+  const pctKhongHT = totalStaffCount > 0 ? ((countKhongHT / totalStaffCount) * 100).toFixed(1) : '0.0';
 
   // Average Total Score of filtered dataset
   const avgTotalScore = totalStaffCount > 0
     ? (filteredStaffList.reduce((sum, s) => sum + s.totalScore, 0) / totalStaffCount).toFixed(1)
-    : 0;
+    : '0.0';
 
   // KHỐI 3: Biểu đồ Tròn (Pie Chart data)
   const pieChartData = useMemo(() => {
+    if (!hasEvaluationData || totalStaffCount === 0) return [];
     return [
       { id: 0, value: countXuatSac, label: 'Xuất sắc', color: '#2e7d32' },
       { id: 1, value: countTot, label: 'Tốt', color: '#1976d2' },
       { id: 2, value: countHoanThanh, label: 'Hoàn thành', color: '#ed6c02' },
       { id: 3, value: countKhongHT, label: 'Không HT', color: '#d32f2f' },
     ];
-  }, [countXuatSac, countTot, countHoanThanh, countKhongHT]);
+  }, [hasEvaluationData, totalStaffCount, countXuatSac, countTot, countHoanThanh, countKhongHT]);
 
   // KHỐI 3: Biểu đồ Cột (Bar Chart data) - So sánh điểm TB của 4 Phòng ban
   const barChartDeptData = useMemo(() => {
+    if (!hasEvaluationData) return [];
+
     const targetDeptIds = ['DEP_VP', 'DEP_BV', 'DEP_TCD', 'DEP_TCCB'];
     const targetDepts = departments.filter((d) => targetDeptIds.includes(d.id));
 
@@ -253,26 +271,287 @@ export default function KPIOverviewView() {
         staffCount: count > 0 ? count : 2,
       };
     });
-  }, [departments, allStaffCalculatedData]);
+  }, [hasEvaluationData, departments, allStaffCalculatedData]);
 
-  // Export handlers (Mock)
+  // Export handlers
   const handleExportExcel = () => {
-    console.log('Exporting KPI Overview data to Excel...', {
-      period: selectedPeriod,
-      department: selectedDeptId,
-      recordsCount: filteredStaffList.length,
-      data: filteredStaffList,
-    });
-    showToast(`Đã xuất báo cáo tổng hợp KPI (${filteredStaffList.length} cán bộ) ra file Excel thành công!`, 'success');
+    if (filteredStaffList.length === 0) {
+      showToast('Không có dữ liệu đánh giá cán bộ trong kỳ này để xuất Excel!', 'warning');
+      return;
+    }
+
+    try {
+      const rows = [];
+      // Row 1-6: Official administrative header
+      rows.push(['TỈNH ỦY ĐẮK LẮK', '', '', '', 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM']);
+      rows.push(['BAN TỔ CHỨC TỈNH ỦY', '', '', '', 'Độc lập - Tự do - Hạnh phúc']);
+      rows.push([]);
+      rows.push(['BÁO CÁO TỔNG HỢP KẾT QUẢ ĐÁNH GIÁ, XẾP LOẠI KPI CÁN BỘ']);
+      rows.push([`Kỳ đánh giá: ${selectedPeriodLabel}`, '', `Đơn vị: ${selectedDeptId === 'ALL' ? 'Toàn cơ quan' : departments.find((d) => d.id === selectedDeptId)?.name || 'Phòng ban'}`]);
+      rows.push([`Ngày xuất báo cáo: ${new Date().toLocaleDateString('vi-VN')}`]);
+      rows.push([]);
+
+      // Table Header Row
+      rows.push([
+        'STT',
+        'Mã Cán bộ',
+        'Họ và tên Cán bộ',
+        'Phòng ban',
+        'Vị trí việc làm',
+        'Điểm KPI (Max 70đ)',
+        'Điểm Phẩm chất (Max 30đ)',
+        'Tổng điểm (100đ)',
+        'Xếp loại chất lượng',
+      ]);
+
+      filteredStaffList.forEach((staff, index) => {
+        rows.push([
+          index + 1,
+          staff.employeeCode,
+          staff.name,
+          staff.deptName,
+          staff.vtvlTitle,
+          staff.autoKPIScore,
+          staff.ethicsScore,
+          staff.totalScore,
+          staff.grade,
+        ]);
+      });
+
+      // Summary statistics rows
+      rows.push([]);
+      rows.push(['THỐNG KÊ TỔNG HỢP TOÀN ĐƠN VỊ:']);
+      rows.push(['Tổng số cán bộ được đánh giá:', totalStaffCount]);
+      rows.push(['Điểm trung bình toàn đơn vị:', `${avgTotalScore} / 100 điểm`]);
+      rows.push(['Hoàn thành xuất sắc nhiệm vụ:', `${countXuatSac} đồng chí (${pctXuatSac}%)`]);
+      rows.push(['Hoàn thành tốt nhiệm vụ:', `${countTot} đồng chí (${pctTot}%)`]);
+      rows.push(['Hoàn thành nhiệm vụ:', `${countHoanThanh} đồng chí (${pctHoanThanh}%)`]);
+      rows.push(['Không hoàn thành nhiệm vụ:', `${countKhongHT} đồng chí (${pctKhongHT}%)`]);
+
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols'] = [
+        { wch: 6 },
+        { wch: 14 },
+        { wch: 25 },
+        { wch: 28 },
+        { wch: 32 },
+        { wch: 18 },
+        { wch: 22 },
+        { wch: 18 },
+        { wch: 28 },
+      ];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Tong_Hop_KPI');
+      const safeFilename = `Bao_Cao_Tong_Hop_KPI_${selectedPeriod}.xlsx`;
+      XLSX.writeFile(wb, safeFilename);
+
+      logAction('Xuất báo cáo Excel', currentUser, `Xuất bảng tổng hợp kết quả đánh giá KPI (${filteredStaffList.length} cán bộ) - ${selectedPeriodLabel}`, 'Tổng quan KPI');
+      showToast(`Đã xuất báo cáo tổng hợp KPI (${filteredStaffList.length} cán bộ) ra file Excel thành công!`, 'success');
+    } catch (err) {
+      console.error('Error exporting Excel:', err);
+      showToast('Có lỗi xảy ra khi tạo tệp Excel!', 'error');
+    }
   };
 
   const handleExportPDF = () => {
-    console.log('Exporting KPI Overview summary report to PDF...', {
-      period: selectedPeriod,
-      department: selectedDeptId,
-      summary: { totalStaffCount, countXuatSac, countTot, countHoanThanh, countKhongHT, avgTotalScore },
-    });
-    showToast(`Đã xuất dự thảo báo cáo tổng hợp xếp loại KPI ra file PDF thành công!`, 'info');
+    if (filteredStaffList.length === 0) {
+      showToast('Không có dữ liệu đánh giá cán bộ trong kỳ này để xuất PDF!', 'warning');
+      return;
+    }
+
+    try {
+      const today = new Date();
+      const dateStr = `Đắk Lắk, ngày ${today.getDate()} tháng ${today.getMonth() + 1} năm ${today.getFullYear()}`;
+      const deptTitle = selectedDeptId === 'ALL' ? 'Toàn cơ quan' : departments.find((d) => d.id === selectedDeptId)?.name || 'Phòng chuyên môn';
+
+      const tableRowsHtml = filteredStaffList.map((s, idx) => `
+        <tr>
+          <td style="text-align: center; padding: 6px 4px;">${idx + 1}</td>
+          <td style="text-align: center; padding: 6px 4px; font-weight: bold;">${s.employeeCode}</td>
+          <td style="padding: 6px 8px; font-weight: bold;">${s.name}</td>
+          <td style="padding: 6px 8px;">${s.deptName}</td>
+          <td style="padding: 6px 8px;">${s.vtvlTitle}</td>
+          <td style="text-align: center; padding: 6px 4px;">${s.autoKPIScore}</td>
+          <td style="text-align: center; padding: 6px 4px;">${s.ethicsScore}</td>
+          <td style="text-align: center; padding: 6px 4px; font-weight: bold; color: #0d47a1;">${s.totalScore}</td>
+          <td style="text-align: center; padding: 6px 6px; font-weight: 600;">${s.grade}</td>
+        </tr>
+      `).join('');
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>Báo cáo Tổng hợp KPI - ${selectedPeriodLabel}</title>
+            <style>
+              @page {
+                size: A4 portrait;
+                margin: 15mm 15mm 15mm 20mm;
+              }
+              body {
+                font-family: "Times New Roman", Times, serif;
+                font-size: 13pt;
+                line-height: 1.35;
+                color: #000;
+                margin: 0;
+                padding: 10px;
+              }
+              table.official-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 12px;
+                font-size: 11pt;
+              }
+              table.official-table th, table.official-table td {
+                border: 1px solid #000;
+              }
+              table.official-table th {
+                background-color: #f2f2f2;
+                font-weight: bold;
+                padding: 8px 4px;
+                text-align: center;
+              }
+              .text-center { text-align: center; }
+              .text-right { text-align: right; }
+              .bold { font-weight: bold; }
+              .italic { font-style: italic; }
+              .uppercase { text-transform: uppercase; }
+            </style>
+          </head>
+          <body>
+            <table style="width: 100%; margin-bottom: 16px;">
+              <tr>
+                <td style="width: 45%; text-align: center; vertical-align: top;">
+                  <div class="uppercase" style="font-size: 11pt;">TỈNH ỦY ĐẮK LẮK</div>
+                  <div class="bold uppercase" style="font-size: 11pt;">BAN TỔ CHỨC TỈNH ỦY</div>
+                  <div style="width: 120px; border-bottom: 1px solid #000; margin: 4px auto 0;"></div>
+                </td>
+                <td style="width: 55%; text-align: center; vertical-align: top;">
+                  <div class="bold uppercase" style="font-size: 11pt;">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>
+                  <div class="bold" style="font-size: 11.5pt;">Độc lập - Tự do - Hạnh phúc</div>
+                  <div style="width: 150px; border-bottom: 1px solid #000; margin: 4px auto 0;"></div>
+                </td>
+              </tr>
+              <tr>
+                <td style="text-align: center; padding-top: 8px; font-size: 11pt;">
+                  Số: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; /BC-BTCTU
+                </td>
+                <td style="text-align: center; padding-top: 8px; font-size: 11pt;" class="italic">
+                  ${dateStr}
+                </td>
+              </tr>
+            </table>
+
+            <div class="text-center" style="margin: 20px 0 16px;">
+              <div class="bold uppercase" style="font-size: 15pt; line-height: 1.3;">
+                BÁO CÁO TỔNG HỢP KẾT QUẢ ĐÁNH GIÁ, XẾP LOẠI KPI
+              </div>
+              <div class="bold uppercase" style="font-size: 13pt; margin-top: 4px;">
+                ${selectedPeriodLabel}
+              </div>
+              <div class="italic" style="font-size: 11pt; margin-top: 2px;">
+                (Phạm vi đối tượng: ${deptTitle})
+              </div>
+            </div>
+
+            <div style="margin-bottom: 12px;">
+              <div class="bold" style="font-size: 12pt; margin-bottom: 6px;">
+                I. TỔNG HỢP KẾT QUẢ VÀ TỶ LỆ XẾP LOẠI CHẤT LƯỢNG
+              </div>
+              <table style="width: 100%; border-collapse: collapse; font-size: 11.5pt; margin-bottom: 10px;">
+                <tr>
+                  <td style="padding: 4px 0;">- Tổng số cán bộ, công chức được đánh giá: <strong>${totalStaffCount}</strong> đồng chí.</td>
+                  <td style="padding: 4px 0;">- Điểm trung bình toàn đơn vị: <strong>${avgTotalScore} / 100 điểm</strong>.</td>
+                </tr>
+                <tr>
+                  <td style="padding: 4px 0;">- Hoàn thành xuất sắc nhiệm vụ: <strong>${countXuatSac}</strong> đồng chí (tỷ lệ <strong>${pctXuatSac}%</strong>).</td>
+                  <td style="padding: 4px 0;">- Hoàn thành tốt nhiệm vụ: <strong>${countTot}</strong> đồng chí (tỷ lệ <strong>${pctTot}%</strong>).</td>
+                </tr>
+                <tr>
+                  <td style="padding: 4px 0;">- Hoàn thành nhiệm vụ: <strong>${countHoanThanh}</strong> đồng chí (tỷ lệ <strong>${pctHoanThanh}%</strong>).</td>
+                  <td style="padding: 4px 0;">- Không hoàn thành nhiệm vụ: <strong>${countKhongHT}</strong> đồng chí (tỷ lệ <strong>${pctKhongHT}%</strong>).</td>
+                </tr>
+              </table>
+            </div>
+
+            <div>
+              <div class="bold" style="font-size: 12pt; margin-bottom: 6px;">
+                II. DANH SÁCH CHI TIẾT KẾT QUẢ ĐÁNH GIÁ TỪNG CÁN BỘ
+              </div>
+              <table class="official-table">
+                <thead>
+                  <tr>
+                    <th style="width: 5%;">STT</th>
+                    <th style="width: 12%;">Mã CB</th>
+                    <th style="width: 22%;">Họ và tên</th>
+                    <th style="width: 18%;">Phòng ban</th>
+                    <th style="width: 18%;">Vị trí việc làm</th>
+                    <th style="width: 7%;">Điểm KPI (70đ)</th>
+                    <th style="width: 7%;">Điểm PC (30đ)</th>
+                    <th style="width: 8%;">Tổng điểm (100đ)</th>
+                    <th style="width: 13%;">Xếp loại</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${tableRowsHtml}
+                </tbody>
+              </table>
+            </div>
+
+            <table style="width: 100%; margin-top: 36px; page-break-inside: avoid;">
+              <tr>
+                <td style="width: 50%; vertical-align: top; font-size: 11pt;">
+                  <div class="bold italic">Nơi nhận:</div>
+                  <div style="font-size: 10pt; line-height: 1.4;">
+                    - Thường trực Tỉnh ủy (để b/c);<br />
+                    - Lãnh đạo Ban Tổ chức;<br />
+                    - Các phòng chuyên môn trực thuộc;<br />
+                    - Lưu: VT, TCCB.
+                  </div>
+                </td>
+                <td style="width: 50%; text-align: center; vertical-align: top;">
+                  <div class="bold uppercase" style="font-size: 11.5pt;">TM. BAN TỔ CHỨC TỈNH ỦY</div>
+                  <div class="bold" style="font-size: 11.5pt;">TRƯỞNG BAN</div>
+                  <div class="italic" style="font-size: 10pt; margin-top: 2px;">(Ký, ghi rõ họ tên và đóng dấu)</div>
+                  <div style="height: 75px;"></div>
+                  <div class="bold" style="font-size: 12pt;">Lê Hoàng Long</div>
+                </td>
+              </tr>
+            </table>
+          </body>
+        </html>
+      `;
+
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+
+      const doc = iframe.contentWindow.document;
+      doc.open();
+      doc.write(htmlContent);
+      doc.close();
+
+      setTimeout(() => {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 1500);
+      }, 350);
+
+      logAction('Xuất báo cáo PDF', currentUser, `Xuất dự thảo báo cáo tổng hợp xếp loại KPI (${filteredStaffList.length} cán bộ) - ${selectedPeriodLabel}`, 'Tổng quan KPI');
+      showToast('Đang mở hộp thoại In / Lưu PDF báo cáo tổng hợp KPI...', 'success');
+    } catch (err) {
+      console.error('Error generating PDF:', err);
+      showToast('Có lỗi xảy ra khi tạo bản in PDF!', 'error');
+    }
   };
 
   // Grade color helper
@@ -318,26 +597,34 @@ export default function KPIOverviewView() {
       headerName: 'Phòng ban',
       flex: 1.2,
       minWidth: 180,
+      headerAlign: 'left',
+      align: 'left',
       renderCell: (params) => (
-        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-          {params.value}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
+          <Typography variant="body2" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
+            {params.value}
+          </Typography>
+        </Box>
       ),
     },
     {
       field: 'vtvlTitle',
-      headerName: 'Vị trí việc làm (VTVL)',
+      headerName: 'Vị trí việc làm',
       flex: 1.3,
       minWidth: 200,
+      headerAlign: 'left',
+      align: 'left',
       renderCell: (params) => (
-        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
-          {params.value}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
+            {params.value}
+          </Typography>
+        </Box>
       ),
     },
     {
       field: 'autoKPIScore',
-      headerName: 'Điểm KPI (Max 70đ)',
+      headerName: 'Điểm KPI',
       flex: 0.9,
       minWidth: 150,
       headerAlign: 'center',
@@ -356,7 +643,7 @@ export default function KPIOverviewView() {
     },
     {
       field: 'ethicsScore',
-      headerName: 'Điểm Phẩm chất (Max 30đ)',
+      headerName: 'Điểm Phẩm chất',
       flex: 0.9,
       minWidth: 160,
       headerAlign: 'center',
@@ -375,24 +662,25 @@ export default function KPIOverviewView() {
     },
     {
       field: 'totalScore',
-      headerName: 'Tổng điểm (100đ)',
+      headerName: 'Tổng điểm',
       flex: 0.9,
       minWidth: 140,
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', gap: 0.5 }}>
           <Typography
             variant="body2"
             sx={{
               fontWeight: 800,
               fontSize: '0.95rem',
               color: params.value >= 90 ? 'success.main' : params.value >= 70 ? 'primary.main' : params.value >= 50 ? 'warning.main' : 'error.main',
+              lineHeight: 1,
             }}
           >
             {params.value}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
             /100
           </Typography>
         </Box>
@@ -414,117 +702,147 @@ export default function KPIOverviewView() {
 
   return (
     <Box sx={{ width: '100%', pb: 5 }}>
-      {/* KHỐI 1: Bộ Lọc (Toolbar) */}
-      <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
+      {/* KHỐI 1: Tiêu đề, Thao tác Xuất báo cáo & Bộ Lọc */}
+      <Card variant="outlined" sx={{ mb: 3, borderRadius: 2.5, boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
         <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
-          <Grid container spacing={2} alignItems="center">
-            {/* Title & Scope badge */}
-            <Grid size={{ xs: 12, md: 3.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <AssessmentRoundedIcon color="primary" sx={{ fontSize: 32 }} />
-                <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-                    Tổng quan & Báo cáo KPI Tập thể
-                  </Typography>
-                </Box>
+          {/* Top Row: Title on Left, Export Buttons on Right */}
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            justifyContent="space-between"
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            spacing={2}
+            sx={{ mb: 2.5 }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <AssessmentRoundedIcon color="primary" sx={{ fontSize: 34 }} />
+              <Box>
+                <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                  Tổng quan & Báo cáo KPI Tập thể
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Dữ liệu tổng hợp đánh giá cán bộ, công chức theo Hướng dẫn 05-HD/TU
+                </Typography>
               </Box>
-            </Grid>
+            </Box>
 
-            {/* Filter: Evaluation Period */}
-            <Grid size={{ xs: 12, sm: 6, md: 2.2 }}>
-              <FormControl fullWidth size="small">
-                <InputLabel id="overview-period-label">Kỳ đánh giá</InputLabel>
+            {/* Action Buttons: Never wrap text, beautiful spacing */}
+            <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="nowrap" sx={{ overflowX: 'auto', maxWidth: '100%' }}>
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<DescriptionRoundedIcon />}
+                onClick={() => setDocModalOpen(true)}
+                sx={{
+                  whiteSpace: 'nowrap',
+                  textTransform: 'none',
+                  fontWeight: 700,
+                  fontSize: '0.85rem',
+                  borderRadius: 2,
+                  px: 2,
+                  py: 0.9,
+                  boxShadow: '0 2px 8px rgba(25, 118, 210, 0.25)',
+                }}
+              >
+                Xuất Quyết định Xếp loại
+              </Button>
+              <Button
+                variant="outlined"
+                color="success"
+                startIcon={<TableChartRoundedIcon />}
+                onClick={handleExportExcel}
+                sx={{
+                  whiteSpace: 'nowrap',
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  borderRadius: 2,
+                  px: 2,
+                  py: 0.9,
+                  bgcolor: 'background.paper',
+                  '&:hover': { bgcolor: 'rgba(46, 125, 50, 0.08)' },
+                }}
+              >
+                Xuất Excel
+              </Button>
+              <Button
+                variant="outlined"
+                color="error"
+                startIcon={<PictureAsPdfRoundedIcon />}
+                onClick={handleExportPDF}
+                sx={{
+                  whiteSpace: 'nowrap',
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  borderRadius: 2,
+                  px: 2,
+                  py: 0.9,
+                  bgcolor: 'background.paper',
+                  '&:hover': { bgcolor: 'rgba(211, 47, 47, 0.08)' },
+                }}
+              >
+                Xuất PDF
+              </Button>
+            </Stack>
+          </Stack>
+
+          <Divider sx={{ mb: 2 }} />
+
+          {/* Bottom Row: Filters (Kỳ đánh giá, Phòng chuyên môn) */}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
+            <FormControl size="small" sx={{ minWidth: 220 }}>
+              <InputLabel id="overview-period-label">Kỳ đánh giá</InputLabel>
+              <Select
+                labelId="overview-period-label"
+                value={selectedPeriod}
+                label="Kỳ đánh giá"
+                onChange={(e) => setSelectedPeriod(e.target.value)}
+              >
+                {EVALUATION_PERIODS.map((period) => (
+                  <MenuItem key={period.value} value={period.value}>
+                    {period.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Tooltip
+              title={
+                isDeptHead
+                  ? 'Trưởng phòng chỉ xem được dữ liệu tổng hợp của phòng mình'
+                  : 'Lọc dữ liệu theo phòng ban chuyên môn'
+              }
+              arrow
+            >
+              <FormControl size="small" disabled={isDeptHead} sx={{ minWidth: 280 }}>
+                <InputLabel id="overview-dept-label">Phòng chuyên môn</InputLabel>
                 <Select
-                  labelId="overview-period-label"
-                  value={selectedPeriod}
-                  label="Kỳ đánh giá"
-                  onChange={(e) => setSelectedPeriod(e.target.value)}
+                  labelId="overview-dept-label"
+                  value={isDeptHead ? currentUser.deptId || 'DEP_TCD' : selectedDeptId}
+                  label="Phòng chuyên môn"
+                  onChange={(e) => setSelectedDeptId(e.target.value)}
+                  startAdornment={
+                    isDeptHead ? (
+                      <InputAdornment position="start">
+                        <LockRoundedIcon fontSize="small" color="action" />
+                      </InputAdornment>
+                    ) : null
+                  }
                 >
-                  {EVALUATION_PERIODS.map((period) => (
-                    <MenuItem key={period.value} value={period.value}>
-                      {period.label}
+                  {!isDeptHead && (
+                    <MenuItem value="ALL">
+                      <em>-- Tất cả các phòng ban --</em>
+                    </MenuItem>
+                  )}
+                  {departments.map((dept) => (
+                    <MenuItem key={dept.id} value={dept.id}>
+                      {dept.name}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
-            </Grid>
-
-            {/* Filter: Department (RBAC: Disabled for DEPT_HEAD) */}
-            <Grid size={{ xs: 12, sm: 6, md: 2.5 }}>
-              <Tooltip
-                title={
-                  isDeptHead
-                    ? 'Trưởng phòng chỉ xem được dữ liệu tổng hợp của phòng mình'
-                    : 'Lọc dữ liệu theo phòng ban chuyên môn'
-                }
-                arrow
-              >
-                <FormControl fullWidth size="small" disabled={isDeptHead}>
-                  <InputLabel id="overview-dept-label">Phòng chuyên môn</InputLabel>
-                  <Select
-                    labelId="overview-dept-label"
-                    value={isDeptHead ? currentUser.deptId || 'DEP_TCD' : selectedDeptId}
-                    label="Phòng chuyên môn"
-                    onChange={(e) => setSelectedDeptId(e.target.value)}
-                    startAdornment={
-                      isDeptHead ? (
-                        <InputAdornment position="start">
-                          <LockRoundedIcon fontSize="small" color="action" />
-                        </InputAdornment>
-                      ) : null
-                    }
-                  >
-                    {!isDeptHead && (
-                      <MenuItem value="ALL">
-                        <em>-- Tất cả các phòng ban --</em>
-                      </MenuItem>
-                    )}
-                    {departments.map((dept) => (
-                      <MenuItem key={dept.id} value={dept.id}>
-                        {dept.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Tooltip>
-            </Grid>
-
-            {/* Export & Document Generator Buttons */}
-            <Grid size={{ xs: 12, md: 3.8 }}>
-              <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', md: 'flex-end' }} flexWrap="wrap">
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="small"
-                  startIcon={<DescriptionRoundedIcon />}
-                  onClick={() => setDocModalOpen(true)}
-                  sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1.5 }}
-                >
-                  Xuất Dự thảo Văn bản
-                </Button>
-                <Button
-                  variant="outlined"
-                  color="success"
-                  size="small"
-                  startIcon={<TableChartRoundedIcon />}
-                  onClick={handleExportExcel}
-                  sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
-                >
-                  Xuất Excel
-                </Button>
-                <Button
-                  variant="outlined"
-                  color="error"
-                  size="small"
-                  startIcon={<PictureAsPdfRoundedIcon />}
-                  onClick={handleExportPDF}
-                  sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
-                >
-                  Xuất PDF
-                </Button>
-              </Stack>
-            </Grid>
-          </Grid>
+            </Tooltip>
+          </Stack>
         </CardContent>
       </Card>
 
@@ -535,36 +853,61 @@ export default function KPIOverviewView() {
           <Card
             variant="outlined"
             sx={{
-              borderRadius: 2,
+              borderRadius: 2.5,
               height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
               bgcolor: 'background.paper',
+              borderLeft: '4px solid #0288d1',
               boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+              '&:hover': {
+                boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                transform: 'translateY(-2px)',
+              },
             }}
           >
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 38 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02rem', lineHeight: 1.2 }}>
+            <CardContent
+              sx={{
+                p: 2.25,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                '&:last-child': { pb: 2.25 },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', height: 36 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03rem', lineHeight: 1.2 }}>
                   Tổng Cán bộ Đánh giá
                 </Typography>
-                <Avatar sx={{ bgcolor: 'primary.light', width: 32, height: 32 }}>
-                  <PeopleRoundedIcon sx={{ color: 'primary.dark', fontSize: 18 }} />
+                <Avatar sx={{ bgcolor: 'rgba(2, 136, 209, 0.12)', width: 28, height: 28, flexShrink: 0 }}>
+                  <PeopleRoundedIcon sx={{ color: '#0288d1', fontSize: 16 }} />
                 </Avatar>
-              </Stack>
-              <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mt: 1.2, minHeight: 40 }}>
-                <Typography variant="h4" sx={{ fontWeight: 800, color: 'text.primary' }}>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2, my: 1.5, height: 40 }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, color: '#0288d1', lineHeight: 1 }}>
                   {totalStaffCount}
                 </Typography>
                 <Chip
                   label="100%"
                   size="small"
-                  variant="outlined"
-                  color="primary"
-                  sx={{ fontWeight: 700, height: 22 }}
+                  sx={{
+                    bgcolor: 'rgba(2, 136, 209, 0.12)',
+                    color: '#0277bd',
+                    border: '1px solid rgba(2, 136, 209, 0.3)',
+                    fontWeight: 800,
+                    height: 24,
+                    borderRadius: '12px',
+                    fontSize: '0.78rem',
+                  }}
                 />
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, minHeight: 20 }}>
-                Điểm TB toàn đơn vị: <strong>{avgTotalScore} / 100đ</strong>
-              </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', mt: 'auto', pt: 1, borderTop: '1px dashed', borderColor: 'divider', height: 30 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                  Điểm TB toàn đơn vị: <strong>{avgTotalScore} / 100đ</strong>
+                </Typography>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
@@ -574,34 +917,61 @@ export default function KPIOverviewView() {
           <Card
             variant="outlined"
             sx={{
-              borderRadius: 2,
+              borderRadius: 2.5,
               height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              bgcolor: 'background.paper',
               borderLeft: '4px solid #2e7d32',
               boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+              '&:hover': {
+                boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                transform: 'translateY(-2px)',
+              },
             }}
           >
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 38 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02rem', lineHeight: 1.2 }}>
+            <CardContent
+              sx={{
+                p: 2.25,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                '&:last-child': { pb: 2.25 },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', height: 36 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03rem', lineHeight: 1.2 }}>
                   Hoàn thành Xuất sắc
                 </Typography>
-                <Avatar sx={{ bgcolor: 'rgba(46, 125, 50, 0.12)', width: 32, height: 32 }}>
-                  <EmojiEventsRoundedIcon sx={{ color: '#2e7d32', fontSize: 18 }} />
+                <Avatar sx={{ bgcolor: 'rgba(46, 125, 50, 0.12)', width: 28, height: 28, flexShrink: 0 }}>
+                  <EmojiEventsRoundedIcon sx={{ color: '#2e7d32', fontSize: 16 }} />
                 </Avatar>
-              </Stack>
-              <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mt: 1.2, minHeight: 40 }}>
-                <Typography variant="h4" sx={{ fontWeight: 800, color: '#2e7d32' }}>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2, my: 1.5, height: 40 }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, color: '#2e7d32', lineHeight: 1 }}>
                   {countXuatSac}
                 </Typography>
                 <Chip
                   label={`${pctXuatSac}%`}
                   size="small"
-                  sx={{ bgcolor: '#2e7d32', color: '#fff', fontWeight: 700, height: 22 }}
+                  sx={{
+                    bgcolor: 'rgba(46, 125, 50, 0.12)',
+                    color: '#1b5e20',
+                    border: '1px solid rgba(46, 125, 50, 0.3)',
+                    fontWeight: 800,
+                    height: 24,
+                    borderRadius: '12px',
+                    fontSize: '0.78rem',
+                  }}
                 />
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, minHeight: 20 }}>
-                Đạt từ 90 đến 100 điểm
-              </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', mt: 'auto', pt: 1, borderTop: '1px dashed', borderColor: 'divider', height: 30 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                  Đạt từ 90 đến 100 điểm
+                </Typography>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
@@ -611,34 +981,61 @@ export default function KPIOverviewView() {
           <Card
             variant="outlined"
             sx={{
-              borderRadius: 2,
+              borderRadius: 2.5,
               height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              bgcolor: 'background.paper',
               borderLeft: '4px solid #1976d2',
               boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+              '&:hover': {
+                boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                transform: 'translateY(-2px)',
+              },
             }}
           >
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 38 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02rem', lineHeight: 1.2 }}>
+            <CardContent
+              sx={{
+                p: 2.25,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                '&:last-child': { pb: 2.25 },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', height: 36 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03rem', lineHeight: 1.2 }}>
                   Hoàn thành Tốt
                 </Typography>
-                <Avatar sx={{ bgcolor: 'rgba(25, 118, 210, 0.12)', width: 32, height: 32 }}>
-                  <ThumbUpAltRoundedIcon sx={{ color: '#1976d2', fontSize: 18 }} />
+                <Avatar sx={{ bgcolor: 'rgba(25, 118, 210, 0.12)', width: 28, height: 28, flexShrink: 0 }}>
+                  <ThumbUpAltRoundedIcon sx={{ color: '#1976d2', fontSize: 16 }} />
                 </Avatar>
-              </Stack>
-              <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mt: 1.2, minHeight: 40 }}>
-                <Typography variant="h4" sx={{ fontWeight: 800, color: '#1976d2' }}>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2, my: 1.5, height: 40 }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, color: '#1976d2', lineHeight: 1 }}>
                   {countTot}
                 </Typography>
                 <Chip
                   label={`${pctTot}%`}
                   size="small"
-                  sx={{ bgcolor: '#1976d2', color: '#fff', fontWeight: 700, height: 22 }}
+                  sx={{
+                    bgcolor: 'rgba(25, 118, 210, 0.12)',
+                    color: '#0d47a1',
+                    border: '1px solid rgba(25, 118, 210, 0.3)',
+                    fontWeight: 800,
+                    height: 24,
+                    borderRadius: '12px',
+                    fontSize: '0.78rem',
+                  }}
                 />
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, minHeight: 20 }}>
-                Đạt từ 70 đến 89 điểm
-              </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', mt: 'auto', pt: 1, borderTop: '1px dashed', borderColor: 'divider', height: 30 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                  Đạt từ 70 đến 89 điểm
+                </Typography>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
@@ -648,34 +1045,61 @@ export default function KPIOverviewView() {
           <Card
             variant="outlined"
             sx={{
-              borderRadius: 2,
+              borderRadius: 2.5,
               height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              bgcolor: 'background.paper',
               borderLeft: '4px solid #d32f2f',
               boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+              '&:hover': {
+                boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
+                transform: 'translateY(-2px)',
+              },
             }}
           >
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 38 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.02rem', lineHeight: 1.2 }}>
+            <CardContent
+              sx={{
+                p: 2.25,
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                '&:last-child': { pb: 2.25 },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', height: 36 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03rem', lineHeight: 1.2 }}>
                   Không hoàn thành
                 </Typography>
-                <Avatar sx={{ bgcolor: 'rgba(211, 47, 47, 0.12)', width: 32, height: 32 }}>
-                  <CancelRoundedIcon sx={{ color: '#d32f2f', fontSize: 18 }} />
+                <Avatar sx={{ bgcolor: 'rgba(211, 47, 47, 0.12)', width: 28, height: 28, flexShrink: 0 }}>
+                  <CancelRoundedIcon sx={{ color: '#d32f2f', fontSize: 16 }} />
                 </Avatar>
-              </Stack>
-              <Stack direction="row" alignItems="baseline" spacing={1} sx={{ mt: 1.2, minHeight: 40 }}>
-                <Typography variant="h4" sx={{ fontWeight: 800, color: '#d32f2f' }}>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2, my: 1.5, height: 40 }}>
+                <Typography variant="h4" sx={{ fontWeight: 800, color: '#d32f2f', lineHeight: 1 }}>
                   {countKhongHT}
                 </Typography>
                 <Chip
                   label={`${pctKhongHT}%`}
                   size="small"
-                  sx={{ bgcolor: '#d32f2f', color: '#fff', fontWeight: 700, height: 22 }}
+                  sx={{
+                    bgcolor: 'rgba(211, 47, 47, 0.12)',
+                    color: '#b71c1c',
+                    border: '1px solid rgba(211, 47, 47, 0.3)',
+                    fontWeight: 800,
+                    height: 24,
+                    borderRadius: '12px',
+                    fontSize: '0.78rem',
+                  }}
                 />
-              </Stack>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, minHeight: 20 }}>
-                Dưới 50 điểm
-              </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', mt: 'auto', pt: 1, borderTop: '1px dashed', borderColor: 'divider', height: 30 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                  Dưới 50 điểm
+                </Typography>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
@@ -697,7 +1121,7 @@ export default function KPIOverviewView() {
                 Phân bổ 4 mức xếp loại theo Hướng dẫn 05-HD/TU
               </Typography>
 
-              {totalStaffCount > 0 ? (
+              {hasEvaluationData && totalStaffCount > 0 ? (
                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                   <PieChart
                     series={[
@@ -730,8 +1154,12 @@ export default function KPIOverviewView() {
                 </Box>
               ) : (
                 <Box sx={{ py: 6, textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Chưa có dữ liệu đánh giá cho bộ lọc đã chọn
+                  <DonutLargeRoundedIcon sx={{ fontSize: 44, color: 'text.disabled', mb: 1, opacity: 0.4 }} />
+                  <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+                    Chưa có dữ liệu đánh giá cho {selectedPeriodLabel}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Kỳ đánh giá chưa diễn ra hoặc đang diễn ra
                   </Typography>
                 </Box>
               )}
@@ -746,14 +1174,14 @@ export default function KPIOverviewView() {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
                 <AssessmentRoundedIcon color="primary" />
                 <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  So sánh Điểm KPI Trung bình giữa các Phòng ban
+                  Trung bình điểm KPI giữa các Phòng ban
                 </Typography>
               </Box>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
                 Điểm tổng hợp trung bình (Thang 100) của các phòng chuyên môn trong cơ quan
               </Typography>
 
-              {barChartDeptData.length > 0 ? (
+              {hasEvaluationData && barChartDeptData.length > 0 ? (
                 <Box sx={{ width: '100%', overflowX: 'auto' }}>
                   <BarChart
                     dataset={barChartDeptData}
@@ -789,8 +1217,12 @@ export default function KPIOverviewView() {
                 </Box>
               ) : (
                 <Box sx={{ py: 6, textAlign: 'center' }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Chưa có dữ liệu phòng ban
+                  <AssessmentRoundedIcon sx={{ fontSize: 44, color: 'text.disabled', mb: 1, opacity: 0.4 }} />
+                  <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+                    Chưa có dữ liệu so sánh điểm cho {selectedPeriodLabel}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Biểu đồ trống do kỳ đánh giá chưa diễn ra hoặc đang diễn ra
                   </Typography>
                 </Box>
               )}
@@ -807,7 +1239,9 @@ export default function KPIOverviewView() {
               Bảng Chi tiết Kết quả Đánh giá Cán bộ
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Danh sách {filteredStaffList.length} nhân sự thuộc {selectedDeptId === 'ALL' ? 'Toàn cơ quan' : departments.find((d) => d.id === selectedDeptId)?.name || 'Phòng'}
+              {hasEvaluationData
+                ? `Danh sách ${filteredStaffList.length} nhân sự thuộc ${selectedDeptId === 'ALL' ? 'Toàn cơ quan' : departments.find((d) => d.id === selectedDeptId)?.name || 'Phòng'}`
+                : `Chưa có dữ liệu đánh giá cho ${selectedPeriodLabel}`}
             </Typography>
           </Box>
 
@@ -834,6 +1268,9 @@ export default function KPIOverviewView() {
             rows={filteredStaffList}
             columns={columns}
             pageSizeOptions={[5, 10, 25, 50]}
+            localeText={{
+              noRowsLabel: `Chưa có dữ liệu đánh giá cho ${selectedPeriodLabel}`,
+            }}
             initialState={{
               pagination: { paginationModel: { pageSize: 10 } },
               sorting: { sortModel: [{ field: 'totalScore', sort: 'desc' }] },
@@ -842,6 +1279,10 @@ export default function KPIOverviewView() {
             density="comfortable"
             sx={{
               border: 'none',
+              '& .MuiDataGrid-cell': {
+                display: 'flex',
+                alignItems: 'center',
+              },
               '& .MuiDataGrid-cell:focus': { outline: 'none' },
               '& .MuiDataGrid-columnHeaders': {
                 bgcolor: 'background.neutral',
@@ -859,7 +1300,14 @@ export default function KPIOverviewView() {
         open={docModalOpen}
         onClose={() => setDocModalOpen(false)}
         initialPeriod={selectedPeriod}
-        staffList={filteredStaffList}
+        initialDocType="DECISION_39"
+        staffList={
+          filteredStaffList.length > 0
+            ? filteredStaffList
+            : (selectedDeptId && selectedDeptId !== 'ALL'
+                ? allStaffCalculatedData.filter((s) => s.deptId === selectedDeptId)
+                : allStaffCalculatedData)
+        }
         departments={departments}
       />
     </Box>

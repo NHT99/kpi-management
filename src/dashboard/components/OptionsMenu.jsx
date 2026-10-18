@@ -59,24 +59,20 @@ export default function OptionsMenu() {
           },
         }}
       >
-        <MenuItem onClick={handleClose}>Profile</MenuItem>
-        <MenuItem onClick={handleClose}>My account</MenuItem>
-        <Divider />
-        <MenuItem onClick={handleClose}>Add another account</MenuItem>
-        <MenuItem onClick={handleClose}>Settings</MenuItem>
-        <Divider />
         <MenuItem
           onClick={handleLogout}
           sx={{
+            py: 1,
+            px: 1.5,
             [`& .${listItemIconClasses.root}`]: {
               ml: 'auto',
               minWidth: 0,
             },
           }}
         >
-          <ListItemText>Đăng xuất (Logout)</ListItemText>
+          <ListItemText sx={{ pr: 1.5 }}>Đăng xuất</ListItemText>
           <ListItemIcon>
-            <LogoutRoundedIcon fontSize="small" />
+            <LogoutRoundedIcon fontSize="small" color="error" />
           </ListItemIcon>
         </MenuItem>
       </Menu>

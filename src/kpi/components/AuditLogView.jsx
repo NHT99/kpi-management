@@ -44,11 +44,8 @@ export default function AuditLogView() {
   const [actionFilter, setActionFilter] = useState('ALL');
   const [roleFilter, setRoleFilter] = useState('ALL');
 
-  // Check RBAC permission: HR_ADMIN and SUPER_ADMIN
-  const canViewAuditLog =
-    hasPermission(PERMISSIONS.AUDIT_LOG_VIEW) ||
-    role === ROLES.HR_ADMIN ||
-    role === ROLES.SUPER_ADMIN;
+  // Check RBAC permission: SUPER_ADMIN only (HR_ADMIN excluded)
+  const canViewAuditLog = role === ROLES.SUPER_ADMIN;
 
   // Filter logs
   const filteredLogs = useMemo(() => {
@@ -241,13 +238,28 @@ export default function AuditLogView() {
     },
   ];
 
+  if (!canViewAuditLog) {
+    return (
+      <Box sx={{ width: '100%', py: 4 }}>
+        <Alert severity="error" variant="filled" icon={<SecurityRoundedIcon fontSize="inherit" />} sx={{ borderRadius: 2 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            Truy cập bị từ chối theo chính sách RBAC
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            Tính năng Nhật ký hệ thống (Audit Log) chỉ dành riêng cho Quản trị hệ thống (SUPER_ADMIN).
+          </Typography>
+        </Alert>
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ width: '100%', pb: 5 }}>
       {ToastComponent}
 
       {/* Header Banner */}
       <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
-        <CardContent sx={{ p: 2.5, '&:last-child': { pb: 2.5 } }}>
+        <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
           <Stack
             direction={{ xs: 'column', md: 'row' }}
             justifyContent="space-between"
@@ -259,9 +271,6 @@ export default function AuditLogView() {
               <Box>
                 <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
                   Nhật ký Hệ thống & Lịch sử Chỉnh sửa (Audit Log)
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Ghi vết tự động toàn bộ thao tác thêm, sửa, chấm điểm, đánh giá và phân quyền theo chuẩn ISO/IEC 27001
                 </Typography>
               </Box>
             </Box>
@@ -296,16 +305,27 @@ export default function AuditLogView() {
       <Grid container spacing={2} sx={{ mb: 3 }}>
         <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 2, height: '100%' }}>
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 36 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25 }}>
+                <Avatar sx={{ bgcolor: 'primary.light', width: 26, height: 26, flexShrink: 0 }}>
+                  <FactCheckRoundedIcon sx={{ color: 'primary.dark', fontSize: 16 }} />
+                </Avatar>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    lineHeight: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
                   Tổng số bản ghi
                 </Typography>
-                <Avatar sx={{ bgcolor: 'primary.light', width: 32, height: 32 }}>
-                  <FactCheckRoundedIcon sx={{ color: 'primary.dark', fontSize: 18 }} />
-                </Avatar>
-              </Stack>
-              <Typography variant="h4" sx={{ fontWeight: 800, mt: 1 }}>
+              </Box>
+              <Typography variant="h4" sx={{ fontWeight: 800 }}>
                 {logs.length}
               </Typography>
               <Typography variant="caption" color="text.secondary">
@@ -317,16 +337,27 @@ export default function AuditLogView() {
 
         <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 2, height: '100%' }}>
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 36 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25 }}>
+                <Avatar sx={{ bgcolor: 'warning.light', width: 26, height: 26, flexShrink: 0 }}>
+                  <AccessTimeRoundedIcon sx={{ color: 'warning.dark', fontSize: 16 }} />
+                </Avatar>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    lineHeight: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
                   Thao tác gần nhất
                 </Typography>
-                <Avatar sx={{ bgcolor: 'warning.light', width: 32, height: 32 }}>
-                  <AccessTimeRoundedIcon sx={{ color: 'warning.dark', fontSize: 18 }} />
-                </Avatar>
-              </Stack>
-              <Typography variant="h6" sx={{ fontWeight: 800, mt: 1, color: 'warning.dark' }}>
+              </Box>
+              <Typography variant="h6" sx={{ fontWeight: 800, color: 'warning.dark' }}>
                 {logs[0]?.timestamp || 'Chưa có'}
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', noWrap: true }}>
@@ -338,16 +369,27 @@ export default function AuditLogView() {
 
         <Grid size={{ xs: 12, sm: 4 }}>
           <Card variant="outlined" sx={{ borderRadius: 2, height: '100%' }}>
-            <CardContent sx={{ p: 2 }}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minHeight: 36 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.25 }}>
+                <Avatar sx={{ bgcolor: 'success.light', width: 26, height: 26, flexShrink: 0 }}>
+                  <SecurityRoundedIcon sx={{ color: 'success.dark', fontSize: 16 }} />
+                </Avatar>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    lineHeight: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
                   Cấp độ bảo mật
                 </Typography>
-                <Avatar sx={{ bgcolor: 'success.light', width: 32, height: 32 }}>
-                  <SecurityRoundedIcon sx={{ color: 'success.dark', fontSize: 18 }} />
-                </Avatar>
-              </Stack>
-              <Typography variant="h6" sx={{ fontWeight: 800, mt: 1, color: 'success.main' }}>
+              </Box>
+              <Typography variant="h6" sx={{ fontWeight: 800, color: 'success.main' }}>
                 Bảo vệ 3 cấp RBAC
               </Typography>
               <Typography variant="caption" color="text.secondary">

@@ -21,6 +21,7 @@ import Stack from '@mui/material/Stack';
 import TablePagination from '@mui/material/TablePagination';
 import Chip from '@mui/material/Chip';
 import InputAdornment from '@mui/material/InputAdornment';
+import Alert from '@mui/material/Alert';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
@@ -35,7 +36,8 @@ import { useAuth } from '../../../rbac/AuthContext';
 import { logAction } from '../../utils/auditLogger';
 
 export default function CanBoTab() {
-  const { currentUser } = useAuth();
+  const { currentUser, role } = useAuth();
+  const isBanLeader = role === ROLES.BAN_LEADER;
   const [staffs, setStaffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [vtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
@@ -64,11 +66,38 @@ export default function CanBoTab() {
     phone: '',
   });
 
-  // Available VTVLs in the form based on selected department
-  const formAvailableVtvls = vtvls.filter((v) => v.deptId === formData.deptId);
+  // Available VTVLs in the form based on selected department (Chỉ hiển thị các VTVL đã được duyệt)
+  const formAvailableVtvls = vtvls.filter(
+    (v) =>
+      v.deptId === formData.deptId &&
+      (v.status === 'APPROVED' || !v.status || (formDialog.isEdit && v.id === formData.vtvlId))
+  );
+
+  // Sorting: Default newest staff first
+  const getStaffOrderScore = (s) => {
+    if (s.createdAt) {
+      const t = new Date(s.createdAt).getTime();
+      if (!isNaN(t)) return t;
+    }
+    if (typeof s.id === 'string' && s.id.startsWith('staff_')) {
+      const ts = parseInt(s.id.replace('staff_', ''), 10);
+      if (!isNaN(ts)) return ts;
+    }
+    if (s.employeeCode) {
+      const codeMatch = s.employeeCode.match(/(\d{4})[-_](\d+)/);
+      if (codeMatch) {
+        const year = parseInt(codeMatch[1], 10);
+        const seq = parseInt(codeMatch[2], 10);
+        return new Date(year, 0, 1).getTime() + seq * 1000;
+      }
+    }
+    return 0;
+  };
+
+  const sortedStaffs = [...staffs].sort((a, b) => getStaffOrderScore(b) - getStaffOrderScore(a));
 
   // Filtered staff list
-  const filteredStaffs = [...staffs].reverse().filter((s) => {
+  const filteredStaffs = sortedStaffs.filter((s) => {
     const matchSearch =
       s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.employeeCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -93,8 +122,9 @@ export default function CanBoTab() {
   };
 
   const handleOpenAdd = () => {
+    if (isBanLeader) return;
     const firstDept = departments[0]?.id || 'dept_tccb';
-    const deptVtvls = vtvls.filter((v) => v.deptId === firstDept);
+    const deptVtvls = vtvls.filter((v) => v.deptId === firstDept && (v.status === 'APPROVED' || !v.status));
     setFormData({
       employeeCode: `CB-2026-${Math.floor(100 + Math.random() * 900)}`,
       name: '',
@@ -103,7 +133,7 @@ export default function CanBoTab() {
       title: deptVtvls[0]?.title || '',
       civilServantRank: 'Chuyên viên (V.03.027)',
       role: ROLES.STAFF,
-      status: 'ACTIVE',
+      status: 'NO_ACCOUNT',
       email: '',
       phone: '',
     });
@@ -111,6 +141,7 @@ export default function CanBoTab() {
   };
 
   const handleOpenEdit = (item) => {
+    if (isBanLeader) return;
     setFormData({
       employeeCode: item.employeeCode,
       name: item.name,
@@ -127,7 +158,7 @@ export default function CanBoTab() {
   };
 
   const handleDeptChangeInForm = (newDeptId) => {
-    const deptVtvls = vtvls.filter((v) => v.deptId === newDeptId);
+    const deptVtvls = vtvls.filter((v) => v.deptId === newDeptId && (v.status === 'APPROVED' || !v.status));
     setFormData({
       ...formData,
       deptId: newDeptId,
@@ -146,6 +177,7 @@ export default function CanBoTab() {
   };
 
   const handleSave = () => {
+    if (isBanLeader) return;
     if (!formData.name || !formData.employeeCode) {
       showToast('Vui lòng nhập đầy đủ Mã và Tên cán bộ!', 'error');
       return;
@@ -153,12 +185,12 @@ export default function CanBoTab() {
 
     if (formDialog.isEdit && formDialog.item) {
       setStaffs((prev) =>
-        prev.map((s) => (s.id === formDialog.item.id ? { ...s, ...formData } : s))
+        prev.map((s) => (s.id === formDialog.item.id ? { ...s, ...formData, role: s.role, status: s.status, username: s.username } : s))
       );
       logAction(
         'Cập nhật cán bộ',
         currentUser,
-        `Cập nhật hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Chức vụ: ${formData.title} - Role: ${formData.role}`,
+        `Cập nhật hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Chức vụ: ${formData.title}`,
         'Quản lý Cán bộ'
       );
       showToast(`Đã cập nhật hồ sơ cán bộ "${formData.name}" thành công!`, 'success');
@@ -166,22 +198,26 @@ export default function CanBoTab() {
       const newStaff = {
         id: `staff_${Date.now()}`,
         ...formData,
+        role: ROLES.STAFF,
+        status: 'NO_ACCOUNT',
+        username: '',
+        createdAt: new Date().toISOString(),
       };
       setStaffs((prev) => [newStaff, ...prev]);
       logAction(
         'Thêm mới cán bộ',
         currentUser,
-        `Thêm mới hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${getDeptName(formData.deptId)} - Role: ${formData.role}`,
+        `Thêm mới hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${getDeptName(formData.deptId)} - Trạng thái: Chờ cấp tài khoản (NO_ACCOUNT)`,
         'Quản lý Cán bộ'
       );
-      showToast(`Đã thêm mới cán bộ "${formData.name}" thành công!`, 'success');
+      showToast(`Đã thêm mới cán bộ "${formData.name}" (Trạng thái: Chờ cấp tài khoản)!`, 'success');
     }
 
     setFormDialog({ open: false, isEdit: false, item: null });
   };
 
   const handleDeleteConfirm = () => {
-    if (!deleteDialog.item) return;
+    if (isBanLeader || !deleteDialog.item) return;
 
     setStaffs((prev) => prev.filter((s) => s.id !== deleteDialog.item.id));
     logAction(
@@ -211,23 +247,25 @@ export default function CanBoTab() {
             <BadgeRoundedIcon color="primary" sx={{ fontSize: 32 }} />
             <Box>
               <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                Quản lý Cán bộ, Công chức & Phân quyền Tài khoản
+                Quản lý Cán bộ, Công chức
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                Quản lý hồ sơ nhân sự, gán Vị trí việc làm (VTVL) và phân định vai trò RBAC hệ thống.
+                Quản lý hồ sơ nhân sự, gán Vị trí việc làm
               </Typography>
             </Box>
           </Stack>
 
-          <Button
-            variant="contained"
-            color="primary"
-            startIcon={<AddRoundedIcon />}
-            onClick={handleOpenAdd}
-            sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
-          >
-            Thêm mới Cán bộ
-          </Button>
+          {!isBanLeader && (
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<AddRoundedIcon />}
+              onClick={handleOpenAdd}
+              sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
+            >
+              Thêm mới Cán bộ
+            </Button>
+          )}
         </Stack>
 
         {/* Filters & Search Toolbar */}
@@ -293,7 +331,9 @@ export default function CanBoTab() {
                 <TableCell sx={{ fontWeight: 700, minWidth: 200 }}>Vị trí việc làm (VTVL)</TableCell>
                 <TableCell sx={{ fontWeight: 700, width: 160 }} align="center">Vai trò RBAC</TableCell>
                 <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Trạng thái</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Thao tác</TableCell>
+                {!isBanLeader && (
+                  <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Thao tác</TableCell>
+                )}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -326,33 +366,40 @@ export default function CanBoTab() {
                       </Typography>
                     </TableCell>
                     <TableCell align="center">
-                      <Chip label={rDetails.shortName} color={rDetails.color} size="small" sx={{ fontWeight: 700, fontSize: '0.72rem' }} />
+                      <Chip
+                        label={staff.status === 'NO_ACCOUNT' ? 'Chờ cấp' : rDetails.shortName}
+                        color={staff.status === 'NO_ACCOUNT' ? 'default' : rDetails.color}
+                        size="small"
+                        sx={{ fontWeight: 700, fontSize: '0.72rem' }}
+                      />
                     </TableCell>
                     <TableCell align="center">
                       <Chip
-                        label={staff.status === 'ACTIVE' ? 'Hoạt động' : 'Khóa'}
-                        color={staff.status === 'ACTIVE' ? 'success' : 'default'}
+                        label={staff.status === 'ACTIVE' ? 'Hoạt động' : staff.status === 'NO_ACCOUNT' ? 'Chưa cấp TK' : 'Khóa'}
+                        color={staff.status === 'ACTIVE' ? 'success' : staff.status === 'NO_ACCOUNT' ? 'warning' : 'default'}
                         size="small"
                         variant="outlined"
                         sx={{ fontWeight: 600, fontSize: '0.7rem' }}
                       />
                     </TableCell>
-                    <TableCell align="center">
-                      <Stack direction="row" spacing={0.5} justifyContent="center">
-                        <IconButton size="small" color="primary" onClick={() => handleOpenEdit(staff)} title="Chỉnh sửa">
-                          <EditRoundedIcon fontSize="small" />
-                        </IconButton>
-                        <IconButton size="small" color="error" onClick={() => setDeleteDialog({ open: true, item: staff })} title="Xóa">
-                          <DeleteRoundedIcon fontSize="small" />
-                        </IconButton>
-                      </Stack>
-                    </TableCell>
+                    {!isBanLeader && (
+                      <TableCell align="center">
+                        <Stack direction="row" spacing={0.5} justifyContent="center">
+                          <IconButton size="small" color="primary" onClick={() => handleOpenEdit(staff)} title="Chỉnh sửa">
+                            <EditRoundedIcon fontSize="small" />
+                          </IconButton>
+                          <IconButton size="small" color="error" onClick={() => setDeleteDialog({ open: true, item: staff })} title="Xóa">
+                            <DeleteRoundedIcon fontSize="small" />
+                          </IconButton>
+                        </Stack>
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
               {paginatedStaffs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={isBanLeader ? 6 : 7} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       Không tìm thấy cán bộ phù hợp với điều kiện tìm kiếm.
                     </Typography>
@@ -451,22 +498,6 @@ export default function CanBoTab() {
             sx={{ mb: 2 }}
           />
 
-          <TextField
-            select
-            fullWidth
-            label="Vai trò Phân quyền (RBAC Role)"
-            InputLabelProps={{ shrink: true }}
-            value={formData.role}
-            onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-            sx={{ mb: 2 }}
-          >
-            {Object.keys(ROLE_DETAILS).map((rKey) => (
-              <MenuItem key={rKey} value={rKey}>
-                {ROLE_DETAILS[rKey].name} ({ROLE_DETAILS[rKey].shortName})
-              </MenuItem>
-            ))}
-          </TextField>
-
           <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
             <TextField
               fullWidth
@@ -484,17 +515,11 @@ export default function CanBoTab() {
             />
           </Stack>
 
-          <TextField
-            select
-            fullWidth
-            label="Trạng thái tài khoản"
-            InputLabelProps={{ shrink: true }}
-            value={formData.status}
-            onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-          >
-            <MenuItem value="ACTIVE">Hoạt động (ACTIVE)</MenuItem>
-            <MenuItem value="LOCKED">Khóa (LOCKED)</MenuItem>
-          </TextField>
+          <Alert severity="info" variant="outlined" sx={{ borderRadius: 1.5 }}>
+            <Typography variant="caption" sx={{ display: 'block', lineHeight: 1.4 }}>
+              <strong>Phân định quyền hạn:</strong> Cán bộ mới thêm sẽ mặc định có trạng thái <strong>Chờ cấp tài khoản (NO_ACCOUNT)</strong>. Việc tạo tên đăng nhập (Username), mật khẩu khởi tạo và phân quyền RBAC sẽ do <strong>Super Admin</strong> thực hiện tại màn hình <em>Quản lý Tài khoản</em>.
+            </Typography>
+          </Alert>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setFormDialog({ open: false, isEdit: false, item: null })} color="inherit" sx={{ textTransform: 'none' }}>

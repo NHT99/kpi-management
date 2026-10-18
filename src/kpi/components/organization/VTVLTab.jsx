@@ -184,9 +184,11 @@ export default function VTVLTab() {
     showToast('Đã phê duyệt khung VTVL thành công!', 'success');
   };
 
+  const hasPendingVtvls = vtvls.some((v) => v.status === 'PENDING');
+
   const handleApproveAllPending = () => {
     setVtvls((prev) =>
-      prev.map((v) => ({ ...v, status: 'APPROVED' }))
+      prev.map((v) => (v.status === 'PENDING' ? { ...v, status: 'APPROVED' } : v))
     );
     logAction(
       'Phê duyệt VTVL',
@@ -230,9 +232,10 @@ export default function VTVLTab() {
                 color="success"
                 startIcon={<CheckCircleRoundedIcon />}
                 onClick={handleApproveAllPending}
+                disabled={!hasPendingVtvls}
                 sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 600 }}
               >
-                Phê duyệt tất cả VTVL
+                Phê duyệt tất cả VTVL {hasPendingVtvls ? `(${vtvls.filter((v) => v.status === 'PENDING').length})` : ''}
               </Button>
             )}
 

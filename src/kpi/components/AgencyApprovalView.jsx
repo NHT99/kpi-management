@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -29,17 +29,29 @@ import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import TablePagination from '@mui/material/TablePagination';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
+
+import FormControl from '@mui/material/FormControl';
+import InputLabel from '@mui/material/InputLabel';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
 
 import { useKPI } from '../KPIContext';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
 import { ROLES } from '../../rbac/roles';
+import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+
+const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
 
 export default function AgencyApprovalView() {
   const { deptSummaries, agencyApproval, approveAgencyResults } = useKPI();
   const { currentUser, role, hasPermission } = useAuth();
 
   const canApprove = hasPermission(PERMISSIONS.KPI_AGENCY_APPROVE);
+
+  // Mặc định hiển thị Quý hiện tại của năm hiện tại
+  const [selectedPeriod, setSelectedPeriod] = useState(currentQuarterInfo.periodKey);
 
   const [approveDialog, setApproveDialog] = useState({
     open: false,
@@ -53,6 +65,14 @@ export default function AgencyApprovalView() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
+
+  const selectedPeriodObj = PERIOD_OPTIONS.find((p) => p.value === selectedPeriod);
+  const selectedPeriodLabel = selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod;
+
+  // Kiểm tra nếu quý chưa diễn ra hoặc chưa có dữ liệu đánh giá:
+  const hasPeriodData = useMemo(() => {
+    return selectedPeriod === 'Q3_2026' || selectedPeriod === 'YEAR_2026';
+  }, [selectedPeriod]);
 
   const filteredDepts = [...deptSummaries].reverse().filter((dept) => {
     if (!searchTerm) return true;
@@ -141,8 +161,58 @@ export default function AgencyApprovalView() {
         </Alert>
       )}
 
-      {/* Official Approval Seal Status */}
-      {agencyApproval.isApproved ? (
+      {/* Period Selection & Filter Toolbar */}
+      <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
+        <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              Hồ sơ Thẩm định & Phê duyệt Kết quả KPI Cấp Ban
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Xem xét hồ sơ đề nghị xếp loại thi đua của các Phòng chuyên môn trực thuộc Ban
+            </Typography>
+          </Box>
+
+          <FormControl size="small" sx={{ minWidth: 230, bgcolor: 'background.paper' }}>
+            <InputLabel id="agency-period-label">Kỳ đánh giá</InputLabel>
+            <Select
+              labelId="agency-period-label"
+              value={selectedPeriod}
+              label="Kỳ đánh giá"
+              onChange={(e) => setSelectedPeriod(e.target.value)}
+            >
+              {PERIOD_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Box>
+      </Card>
+
+      {!hasPeriodData ? (
+        <Card variant="outlined" sx={{ borderRadius: 2, p: 6, textAlign: 'center', bgcolor: 'background.paper' }}>
+          <AssessmentRoundedIcon sx={{ fontSize: 56, color: 'text.disabled', mb: 1.5, opacity: 0.4 }} />
+          <Typography variant="h6" sx={{ fontWeight: 700, color: 'text.secondary', mb: 1 }}>
+            Chưa có dữ liệu {selectedPeriodLabel}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 520, mx: 'auto', mb: 3 }}>
+            Kỳ đánh giá này chưa diễn ra hoặc đang trong quá trình thực hiện, Hội đồng đánh giá chưa tiến hành họp thẩm định. Vui lòng chuyển sang kỳ đã có kết quả để xem xét.
+          </Typography>
+          <Button
+            variant="outlined"
+            color="primary"
+            onClick={() => setSelectedPeriod('Q3_2026')}
+            sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+          >
+            Chuyển đến Quý III / 2026 (Đã có kết quả)
+          </Button>
+        </Card>
+      ) : (
+        <>
+          {/* Official Approval Seal Status */}
+          {agencyApproval.isApproved ? (
         <Card
           variant="elevation"
           elevation={2}
@@ -454,6 +524,8 @@ export default function AgencyApprovalView() {
           labelRowsPerPage="Số dòng mỗi trang:"
         />
       </Card>
+      </>
+      )}
 
       {/* Dialog: Phê duyệt kết quả */}
       <Dialog

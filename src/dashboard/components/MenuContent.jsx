@@ -4,9 +4,11 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import Stack from '@mui/material/Stack';
-import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
+import Tooltip from '@mui/material/Tooltip';
+import PropTypes from 'prop-types';
+
 import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
 import SupervisorAccountRoundedIcon from '@mui/icons-material/SupervisorAccountRounded';
 import GavelRoundedIcon from '@mui/icons-material/GavelRounded';
@@ -15,134 +17,167 @@ import BarChartRoundedIcon from '@mui/icons-material/BarChartRounded';
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import MenuBookRoundedIcon from '@mui/icons-material/MenuBookRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import ManageAccountsRoundedIcon from '@mui/icons-material/ManageAccountsRounded';
 
 import { useNavigation, NAV_TABS } from '../../kpi/NavigationContext';
 import { useAuth } from '../../rbac/AuthContext';
 import { ROLES } from '../../rbac/roles';
 import { PERMISSIONS } from '../../rbac/permissions';
 
-export default function MenuContent() {
+export default function MenuContent({ collapsed = false }) {
   const { activeTab, setActiveTab } = useNavigation();
   const { role, hasPermission } = useAuth();
 
   // Navigation items structured by RBAC capability
   const items = [];
 
-  // 0. Organization Management (Mục 1) - for HR_ADMIN and SUPER_ADMIN
+  // 1. Dashboard (Tổng quan kết quả tập thể) - Không hiển thị cho SUPER_ADMIN và STAFF
+  if (role !== ROLES.SUPER_ADMIN && role !== ROLES.STAFF) {
+    items.push({
+      id: NAV_TABS.OVERVIEW,
+      text: 'Tổng quan kết quả tập thể',
+      subtext: 'Dashboard tổng hợp & biểu đồ',
+      icon: <BarChartRoundedIcon sx={{ fontSize: '1.6rem' }} />,
+      color: 'primary',
+    });
+  }
+
+  // 2. Organization Management (Mục 1) - for HR_ADMIN and SUPER_ADMIN
   if (hasPermission(PERMISSIONS.STAFF_MANAGE) || hasPermission(PERMISSIONS.DEPT_MANAGE)) {
     items.push({
       id: NAV_TABS.ORGANIZATION,
       text: 'QL Cán bộ, VTVL & Phòng ban',
       subtext: 'Master data tổ chức & nhân sự',
-      icon: <ApartmentRoundedIcon />,
+      icon: <ApartmentRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'primary',
     });
   }
 
-  // 1. Task & KPI / OKR Management (Mục 2) - Visible ONLY for HR_ADMIN, BAN_LEADER, DEPT_HEAD (Excluded for SUPER_ADMIN and STAFF)
+  // 3. Task & KPI / OKR Management (Mục 2)
   if (role === ROLES.HR_ADMIN || role === ROLES.BAN_LEADER || role === ROLES.DEPT_HEAD) {
     items.push({
       id: NAV_TABS.KPI_MANAGEMENT,
       text: 'QL Nhiệm vụ & KPI / OKR',
       subtext: 'Ngân hàng KPI gốc & OKR',
-      icon: <MenuBookRoundedIcon />,
+      icon: <MenuBookRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'success',
     });
   }
 
-  // 2. Personal KPI item - for Specialist and Dept Head
+  // 4. Personal KPI item
   if (hasPermission(PERMISSIONS.KPI_PERSONAL_VIEW)) {
     items.push({
       id: NAV_TABS.PERSONAL,
       text: role === ROLES.DEPT_HEAD ? 'KPI Cá nhân (Trưởng phòng)' : 'KPI & Tiến độ cá nhân',
       subtext: 'Cập nhật tiến độ & tự đánh giá',
-      icon: <AssignmentRoundedIcon />,
+      icon: <AssignmentRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'info',
     });
   }
 
-  // 3. Department evaluation item - for Dept Head and Leadership
-  if (hasPermission(PERMISSIONS.KPI_DEPT_VIEW_SUMMARY)) {
+  // 5. Department evaluation item - Không hiển thị cho HR_ADMIN và SUPER_ADMIN
+  if (role !== ROLES.HR_ADMIN && role !== ROLES.SUPER_ADMIN && hasPermission(PERMISSIONS.KPI_DEPT_VIEW_SUMMARY)) {
     items.push({
       id: NAV_TABS.DEPARTMENT,
       text: 'Đánh giá KPI Cấp phòng',
       subtext: 'Chấm điểm công chức & xem tổng hợp',
-      icon: <SupervisorAccountRoundedIcon />,
+      icon: <SupervisorAccountRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'warning',
     });
   }
 
-  // 4. Agency approval item - for Leadership
+  // 6. Agency approval item
   if (hasPermission(PERMISSIONS.KPI_AGENCY_APPROVE) || role === ROLES.AGENCY_LEADERSHIP) {
     items.push({
       id: NAV_TABS.AGENCY,
       text: 'Thẩm định & Phê duyệt cấp Ban',
       subtext: 'Thẩm định & phê duyệt kết quả',
-      icon: <GavelRoundedIcon />,
+      icon: <GavelRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'error',
     });
   }
 
-  // 5. Agency overview analytics & collective dashboard
-  if (hasPermission(PERMISSIONS.DASHBOARD_ANALYTICS_VIEW) || role !== ROLES.STAFF) {
-    items.push({
-      id: NAV_TABS.OVERVIEW,
-      text: 'Tổng quan kết quả tập thể',
-      subtext: 'Dashboard tổng hợp & biểu đồ',
-      icon: <BarChartRoundedIcon />,
-      color: 'primary',
-    });
-  }
-
-  // 6. Audit Log - History of edits (for HR_ADMIN and SUPER_ADMIN)
-  if (hasPermission(PERMISSIONS.AUDIT_LOG_VIEW) || role === ROLES.HR_ADMIN || role === ROLES.SUPER_ADMIN) {
+  // 7. Audit Log - Chỉ dành cho SUPER_ADMIN (HR_ADMIN không có quyền truy cập)
+  if (role === ROLES.SUPER_ADMIN) {
     items.push({
       id: NAV_TABS.AUDIT_LOG,
       text: 'Nhật ký hệ thống (Audit Log)',
       subtext: 'Lịch sử chỉnh sửa & thao tác',
-      icon: <HistoryRoundedIcon />,
+      icon: <HistoryRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'secondary',
     });
   }
 
-  // 7. RBAC Matrix - visible to everyone to understand and inspect access rules
+  // 8. Quản lý Tài khoản (Chỉ dành riêng cho SUPER_ADMIN)
+  if (role === ROLES.SUPER_ADMIN) {
+    items.push({
+      id: NAV_TABS.ACCOUNT_MANAGEMENT,
+      text: 'Quản lý Tài khoản (Admin)',
+      subtext: 'Cấp phát & phân quyền tài khoản',
+      icon: <ManageAccountsRoundedIcon sx={{ fontSize: '1.6rem' }} />,
+      color: 'primary',
+    });
+  }
+
+  // 9. RBAC Matrix
   const rbacItem = {
     id: NAV_TABS.RBAC_MATRIX,
     text: 'Ma trận phân quyền (RBAC)',
     subtext: 'Chi tiết phân quyền 3 cấp',
-    icon: <SecurityRoundedIcon />,
+    icon: <SecurityRoundedIcon sx={{ fontSize: '1.6rem' }} />,
     color: 'default',
   };
 
   return (
-    <Stack sx={{ flexGrow: 1, p: 1, justifyContent: 'space-between' }}>
+    <Stack sx={{ flexGrow: 1, p: collapsed ? 0.8 : 1.5, justifyContent: 'space-between' }}>
       <Box>
-        <List dense sx={{ gap: 0.5, display: 'flex', flexDirection: 'column' }}>
+        <List dense sx={{ gap: collapsed ? 0.8 : 0.75, display: 'flex', flexDirection: 'column', p: 0 }}>
           {items.map((item) => {
             const isSelected = activeTab === item.id;
-            return (
-              <ListItem key={item.id} disablePadding sx={{ display: 'block' }}>
-                <ListItemButton
-                  selected={isSelected}
-                  onClick={() => setActiveTab(item.id)}
+            const buttonContent = (
+              <ListItemButton
+                selected={isSelected}
+                onClick={() => setActiveTab(item.id)}
+                sx={{
+                  width: collapsed ? 46 : 'auto',
+                  height: collapsed ? 46 : 'auto',
+                  minWidth: collapsed ? 46 : 'auto',
+                  borderRadius: collapsed ? 2.5 : 1.5,
+                  py: collapsed ? 0 : 1.25,
+                  px: collapsed ? 0 : 2,
+                  mx: collapsed ? 'auto' : 0,
+                  justifyContent: collapsed ? 'center' : 'flex-start',
+                  border: isSelected ? '1.5px solid' : '1.5px solid transparent',
+                  borderColor: isSelected ? 'primary.main' : 'transparent',
+                  bgcolor: isSelected
+                    ? (theme) => (theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.25)' : 'rgba(25, 118, 210, 0.12)')
+                    : 'transparent',
+                  boxShadow: isSelected && collapsed ? '0 2px 8px rgba(25, 118, 210, 0.22)' : 'none',
+                  transition: 'all 0.18s ease',
+                  '&:hover': {
+                    bgcolor: isSelected
+                      ? (theme) => (theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.35)' : 'rgba(25, 118, 210, 0.18)')
+                      : 'action.hover',
+                    transform: collapsed ? 'scale(1.08)' : 'none',
+                    color: 'primary.main',
+                  },
+                }}
+              >
+                <ListItemIcon
                   sx={{
-                    borderRadius: 1.5,
-                    py: 1,
-                    px: 1.5,
-                    border: isSelected ? '1px solid' : '1px solid transparent',
-                    borderColor: isSelected ? 'primary.main' : 'transparent',
+                    minWidth: collapsed ? 0 : 44,
+                    justifyContent: 'center',
+                    color: isSelected ? 'primary.main' : 'text.secondary',
                   }}
                 >
-                  <ListItemIcon sx={{ minWidth: 36, color: isSelected ? 'primary.main' : 'inherit' }}>
-                    {item.icon}
-                  </ListItemIcon>
+                  {item.icon}
+                </ListItemIcon>
+                {!collapsed && (
                   <ListItemText
                     primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.5 }}>
-                        <Typography variant="body2" sx={{ fontWeight: isSelected ? 700 : 500, fontSize: '0.85rem' }}>
-                          {item.text}
-                        </Typography>
-                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: isSelected ? 700 : 500, fontSize: '0.9rem' }}>
+                        {item.text}
+                      </Typography>
                     }
                     secondary={
                       <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem', display: 'block' }}>
@@ -150,61 +185,115 @@ export default function MenuContent() {
                       </Typography>
                     }
                   />
-                </ListItemButton>
+                )}
+              </ListItemButton>
+            );
+
+            return (
+              <ListItem key={item.id} disablePadding sx={{ display: 'flex', justifyContent: 'center' }}>
+                {collapsed ? (
+                  <Tooltip title={item.text} placement="right" arrow>
+                    {buttonContent}
+                  </Tooltip>
+                ) : (
+                  buttonContent
+                )}
               </ListItem>
             );
           })}
         </List>
       </Box>
 
-      <Box sx={{ mt: 'auto', pt: 2 }}>
-        <Typography
-          variant="caption"
-          sx={{
-            px: 1.5,
-            py: 0.5,
-            fontWeight: 700,
-            textTransform: 'uppercase',
-            color: 'text.secondary',
-            letterSpacing: '0.08rem',
-            display: 'block',
-          }}
-        >
-          Cấu trúc & Phân quyền
-        </Typography>
+      <Box sx={{ mt: 'auto', pt: 1.5 }}>
+        {!collapsed && (
+          <Typography
+            variant="caption"
+            sx={{
+              px: 1.5,
+              py: 0.5,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              color: 'text.secondary',
+              letterSpacing: '0.08rem',
+              display: 'block',
+            }}
+          >
+            Cấu trúc & Phân quyền
+          </Typography>
+        )}
 
-        <List dense>
-          <ListItem disablePadding sx={{ display: 'block' }}>
-            <ListItemButton
-              selected={activeTab === rbacItem.id}
-              onClick={() => setActiveTab(rbacItem.id)}
-              sx={{
-                borderRadius: 1.5,
-                py: 1,
-                px: 1.5,
-                border: activeTab === rbacItem.id ? '1px solid' : '1px solid transparent',
-                borderColor: activeTab === rbacItem.id ? 'primary.main' : 'transparent',
-              }}
-            >
-              <ListItemIcon sx={{ minWidth: 36, color: activeTab === rbacItem.id ? 'primary.main' : 'inherit' }}>
-                {rbacItem.icon}
-              </ListItemIcon>
-              <ListItemText
-                primary={
-                  <Typography variant="body2" sx={{ fontWeight: activeTab === rbacItem.id ? 700 : 500, fontSize: '0.85rem' }}>
-                    {rbacItem.text}
-                  </Typography>
-                }
-                secondary={
-                  <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem', display: 'block' }}>
-                    {rbacItem.subtext}
-                  </Typography>
-                }
-              />
-            </ListItemButton>
+        <List dense sx={{ p: 0 }}>
+          <ListItem disablePadding sx={{ display: 'flex', justifyContent: 'center' }}>
+            {collapsed ? (
+              <Tooltip title={rbacItem.text} placement="right" arrow>
+                <ListItemButton
+                  selected={activeTab === rbacItem.id}
+                  onClick={() => setActiveTab(rbacItem.id)}
+                  sx={{
+                    width: 46,
+                    height: 46,
+                    minWidth: 46,
+                    borderRadius: 2.5,
+                    p: 0,
+                    mx: 'auto',
+                    justifyContent: 'center',
+                    border: activeTab === rbacItem.id ? '1.5px solid' : '1.5px solid transparent',
+                    borderColor: activeTab === rbacItem.id ? 'primary.main' : 'transparent',
+                    bgcolor: activeTab === rbacItem.id
+                      ? (theme) => (theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.25)' : 'rgba(25, 118, 210, 0.12)')
+                      : 'transparent',
+                    boxShadow: activeTab === rbacItem.id ? '0 2px 8px rgba(25, 118, 210, 0.22)' : 'none',
+                    transition: 'all 0.18s ease',
+                    '&:hover': {
+                      bgcolor: activeTab === rbacItem.id
+                        ? (theme) => (theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.35)' : 'rgba(25, 118, 210, 0.18)')
+                        : 'action.hover',
+                      transform: 'scale(1.08)',
+                      color: 'primary.main',
+                    },
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 0, justifyContent: 'center', color: activeTab === rbacItem.id ? 'primary.main' : 'text.secondary' }}>
+                    {rbacItem.icon}
+                  </ListItemIcon>
+                </ListItemButton>
+              </Tooltip>
+            ) : (
+              <ListItemButton
+                selected={activeTab === rbacItem.id}
+                onClick={() => setActiveTab(rbacItem.id)}
+                sx={{
+                  borderRadius: 1.5,
+                  py: 1.25,
+                  px: 2,
+                  border: activeTab === rbacItem.id ? '1px solid' : '1px solid transparent',
+                  borderColor: activeTab === rbacItem.id ? 'primary.main' : 'transparent',
+                }}
+              >
+                <ListItemIcon sx={{ minWidth: 44, color: activeTab === rbacItem.id ? 'primary.main' : 'inherit' }}>
+                  {rbacItem.icon}
+                </ListItemIcon>
+                <ListItemText
+                  primary={
+                    <Typography variant="body2" sx={{ fontWeight: activeTab === rbacItem.id ? 700 : 500, fontSize: '0.9rem' }}>
+                      {rbacItem.text}
+                    </Typography>
+                  }
+                  secondary={
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem', display: 'block' }}>
+                      {rbacItem.subtext}
+                    </Typography>
+                  }
+                />
+              </ListItemButton>
+            )}
           </ListItem>
         </List>
       </Box>
     </Stack>
   );
 }
+
+MenuContent.propTypes = {
+  collapsed: PropTypes.bool,
+};

@@ -12,6 +12,7 @@ export const NAV_TABS = {
   RBAC_MATRIX: 'rbac-matrix',           // Ma trận phân quyền RBAC
   OVERVIEW: 'overview',                 // Tổng quan biểu đồ
   AUDIT_LOG: 'audit-log',               // Nhật ký hệ thống & Audit Log (HR & Super Admin)
+  ACCOUNT_MANAGEMENT: 'account-management', // Quản lý Tài khoản (Dành riêng cho SUPER_ADMIN)
 };
 
 const NavigationContext = createContext(null);
@@ -37,13 +38,9 @@ export function NavigationProvider({ children }) {
   const defaultTab =
     role === ROLES.STAFF
       ? NAV_TABS.PERSONAL
-      : role === ROLES.DEPT_HEAD
-      ? NAV_TABS.DEPARTMENT
-      : role === ROLES.BAN_LEADER
-      ? NAV_TABS.AGENCY
-      : role === ROLES.HR_ADMIN
-      ? NAV_TABS.ORGANIZATION
-      : NAV_TABS.RBAC_MATRIX;
+      : role === ROLES.SUPER_ADMIN
+        ? NAV_TABS.ACCOUNT_MANAGEMENT
+        : NAV_TABS.OVERVIEW;
 
   const activeTab = userSelectedTab || defaultTab;
 

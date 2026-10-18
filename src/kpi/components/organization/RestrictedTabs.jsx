@@ -8,7 +8,7 @@ export function RestrictedVTVLTab() {
   const { role } = useAuth();
   if (role === ROLES.SUPER_ADMIN) {
     return (
-      <AccessDeniedView message="Vui lòng chuyển sang vai trò HR Admin hoặc Lãnh đạo Ban để thao tác." />
+      <AccessDeniedView message="" />
     );
   }
   return <VTVLTab />;
@@ -18,7 +18,7 @@ export function RestrictedCanBoTab() {
   const { role } = useAuth();
   if (role === ROLES.SUPER_ADMIN) {
     return (
-      <AccessDeniedView message="Vui lòng chuyển sang vai trò HR Admin để thao tác." />
+      <AccessDeniedView message="" />
     );
   }
   return <CanBoTab />;

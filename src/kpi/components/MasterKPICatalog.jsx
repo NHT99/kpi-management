@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
 import Stack from '@mui/material/Stack';
@@ -20,6 +20,7 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import TablePagination from '@mui/material/TablePagination';
 import Chip from '@mui/material/Chip';
+import Tooltip from '@mui/material/Tooltip';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
@@ -31,6 +32,7 @@ import { INITIAL_MASTER_KPIS } from '../data/mockKPIData';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
+import ExcelImportModal from './ExcelImportModal';
 
 const VTVL_OPTIONS = [
   { id: 'vtvl-01', name: 'Chuyên viên Tổ chức cán bộ' },
@@ -42,6 +44,8 @@ export default function MasterKPICatalog() {
   const [masterKPIs, setMasterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterVTVL, setFilterVTVL] = useState('ALL');
+  const [filterGroup, setFilterGroup] = useState('ALL');
+  const [importModalOpen, setImportModalOpen] = useState(false);
   const { showToast, ToastComponent } = useToast();
   const { hasPermission } = useAuth();
 
@@ -144,8 +148,50 @@ export default function MasterKPICatalog() {
   };
 
   const handleImportExcel = () => {
-    showToast('Tính năng Import Excel từ file mẫu đã sẵn sàng! Đã đồng bộ 14 tiêu chí mới từ hệ thống.', 'success');
+    setImportModalOpen(true);
   };
+
+  const handleImportSuccess = (importedItems, mode) => {
+    if (mode === 'replace') {
+      setMasterKPIs(importedItems);
+      showToast(`Đã ghi đè toàn bộ danh mục thành công với ${importedItems.length} nhiệm vụ từ Excel!`, 'success');
+    } else {
+      // Append / Upsert
+      const existingMap = new Map(masterKPIs.map((item) => [item.code, item]));
+      let updatedCount = 0;
+      let addedCount = 0;
+
+      importedItems.forEach((imp) => {
+        if (existingMap.has(imp.code)) {
+          const old = existingMap.get(imp.code);
+          existingMap.set(imp.code, { ...old, ...imp, id: old.id });
+          updatedCount++;
+        } else {
+          existingMap.set(imp.code, imp);
+          addedCount++;
+        }
+      });
+
+      setMasterKPIs(Array.from(existingMap.values()));
+      showToast(
+        `Import Excel thành công! Đã thêm mới ${addedCount} và cập nhật ${updatedCount} nhiệm vụ.`,
+        'success'
+      );
+    }
+  };
+
+  // Trích xuất các nhóm công việc duy nhất từ danh mục
+  const uniqueGroups = useMemo(() => {
+    const map = new Map();
+    masterKPIs.forEach((item) => {
+      if (item.groupCode) {
+        map.set(item.groupCode, item.groupName || `Nhóm ${item.groupCode}`);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([code, name]) => ({ code, name }))
+      .sort((a, b) => a.code.localeCompare(b.code));
+  }, [masterKPIs]);
 
   // Filter logic
   const filteredKPIs = [...masterKPIs].reverse().filter((item) => {
@@ -154,7 +200,8 @@ export default function MasterKPICatalog() {
       item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.outputProduct.toLowerCase().includes(searchTerm.toLowerCase());
     const matchVTVL = filterVTVL === 'ALL' || item.vtvlId === filterVTVL;
-    return matchSearch && matchVTVL;
+    const matchGroup = filterGroup === 'ALL' || item.groupCode === filterGroup;
+    return matchSearch && matchVTVL && matchGroup;
   });
 
   const [page, setPage] = useState(0);
@@ -167,13 +214,13 @@ export default function MasterKPICatalog() {
 
       {/* Toolbar */}
       <Card variant="outlined" sx={{ p: 2.5, mb: 3, borderRadius: 2 }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" alignItems="center">
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ width: { xs: '100%', sm: 'auto' }, flexGrow: 1 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between" alignItems="center">
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ width: { xs: '100%', md: 'auto' }, flexGrow: 1 }} flexWrap="wrap" useFlexGap>
             <TextField
-              placeholder="Tìm kiếm theo mã, tên KPI, sản phẩm..."
+              placeholder="Tìm theo mã (A.001...), tên công việc, sản phẩm..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              sx={{ width: { xs: '100%', sm: '320px' } }}
+              sx={{ width: { xs: '100%', sm: '300px' } }}
               InputProps={{
                 startAdornment: (
                   <SearchRoundedIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />
@@ -181,11 +228,29 @@ export default function MasterKPICatalog() {
               }}
             />
 
+            {uniqueGroups.length > 0 && (
+              <TextField
+                select
+                value={filterGroup}
+                onChange={(e) => setFilterGroup(e.target.value)}
+                sx={{ minWidth: 200 }}
+                label="Lọc theo Nhóm"
+                InputLabelProps={{ shrink: true }}
+              >
+                <MenuItem value="ALL">Tất cả các nhóm ({uniqueGroups.length})</MenuItem>
+                {uniqueGroups.map((g) => (
+                  <MenuItem key={g.code} value={g.code}>
+                    Nhóm {g.code} ({g.name.length > 25 ? g.name.slice(0, 25) + '...' : g.name})
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+
             <TextField
               select
               value={filterVTVL}
               onChange={(e) => setFilterVTVL(e.target.value)}
-              sx={{ minWidth: 220 }}
+              sx={{ minWidth: 200 }}
               label="Lọc theo VTVL"
               InputLabelProps={{ shrink: true }}
             >
@@ -198,12 +263,13 @@ export default function MasterKPICatalog() {
             </TextField>
           </Stack>
 
-          <Stack direction="row" spacing={1.5} sx={{ width: { xs: '100%', sm: 'auto' }, justifyContent: 'flex-end' }}>
+          <Stack direction="row" spacing={1.5} sx={{ width: { xs: '100%', md: 'auto' }, justifyContent: 'flex-end' }}>
             <Button
               variant="outlined"
+              color="primary"
               startIcon={<UploadFileRoundedIcon />}
               onClick={handleImportExcel}
-              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
             >
               Import Excel
             </Button>
@@ -223,10 +289,11 @@ export default function MasterKPICatalog() {
       {/* Table Catalog */}
       <Card variant="outlined" sx={{ borderRadius: 2, overflow: 'hidden' }}>
         <TableContainer component={Paper} elevation={0}>
-          <Table sx={{ minWidth: 900 }}>
+          <Table sx={{ minWidth: 950 }}>
             <TableHead sx={{ backgroundColor: 'action.hover' }}>
               <TableRow>
                 <TableCell sx={{ fontWeight: 700 }}>Mã nhiệm vụ</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Nhóm công việc</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Tên công việc / Tiêu chí</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Sản phẩm đầu ra</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Độ phức tạp</TableCell>
@@ -240,7 +307,7 @@ export default function MasterKPICatalog() {
             <TableBody>
               {paginatedKPIs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} sx={{ textAlign: 'center', py: 4 }}>
+                  <TableCell colSpan={10} sx={{ textAlign: 'center', py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       Không tìm thấy tiêu chí KPI gốc nào phù hợp.
                     </Typography>
@@ -250,6 +317,29 @@ export default function MasterKPICatalog() {
                 paginatedKPIs.map((item) => (
                   <TableRow key={item.id} hover>
                     <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>{item.code}</TableCell>
+                    <TableCell>
+                      {item.groupCode ? (
+                        <Tooltip title={item.groupName || `Nhóm ${item.groupCode}`} arrow>
+                          <Chip
+                            label={`Nhóm ${item.groupCode}`}
+                            size="small"
+                            color={
+                              item.groupCode === 'A'
+                                ? 'primary'
+                                : item.groupCode === 'B'
+                                ? 'info'
+                                : item.groupCode === 'C'
+                                ? 'success'
+                                : 'default'
+                            }
+                            variant="outlined"
+                            sx={{ fontWeight: 700, height: 22, fontSize: '0.72rem' }}
+                          />
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">-</Typography>
+                      )}
+                    </TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>{item.title}</TableCell>
                     <TableCell>{item.outputProduct}</TableCell>
                     <TableCell>
@@ -257,16 +347,18 @@ export default function MasterKPICatalog() {
                         label={item.complexity}
                         size="small"
                         color={
-                          item.complexity === 'Rất cao'
+                          item.complexity === 'Rất cao' || item.complexity?.includes('4')
                             ? 'error'
-                            : item.complexity === 'Cao'
+                            : item.complexity === 'Cao' || item.complexity?.includes('3')
                             ? 'warning'
                             : 'default'
                         }
                         sx={{ fontWeight: 600, height: 22 }}
                       />
                     </TableCell>
-                    <TableCell sx={{ textAlign: 'right', fontWeight: 500 }}>{item.maxHours}h</TableCell>
+                    <TableCell sx={{ textAlign: 'right', fontWeight: 500 }}>
+                      {item.maxHours}{typeof item.maxHours === 'number' ? 'h' : ''}
+                    </TableCell>
                     <TableCell sx={{ textAlign: 'right', fontWeight: 700, color: 'success.main' }}>
                       {item.score}
                     </TableCell>
@@ -410,6 +502,13 @@ export default function MasterKPICatalog() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Modal Import Excel */}
+      <ExcelImportModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onImportSuccess={handleImportSuccess}
+      />
     </Box>
   );
 }

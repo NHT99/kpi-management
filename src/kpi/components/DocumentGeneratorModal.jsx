@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -26,6 +26,7 @@ import TableCell from '@mui/material/TableCell';
 import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
+import IconButton from '@mui/material/IconButton';
 
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
@@ -33,7 +34,9 @@ import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import { getCurrentQuarterInfo } from '../utils/quarterHelper';
 
+const currentQuarterInfo = getCurrentQuarterInfo();
 const EVALUATION_PERIODS = [
   { value: 'Q1_2026', label: 'Quý I / 2026' },
   { value: 'Q2_2026', label: 'Quý II / 2026' },
@@ -45,23 +48,46 @@ const EVALUATION_PERIODS = [
 export default function DocumentGeneratorModal({
   open,
   onClose,
-  initialPeriod = 'Q3_2026',
+  initialPeriod = 'YEAR_2026',
+  initialDocType = 'DECISION_39',
   staffList = [],
   departments = [],
 }) {
-  const [selectedDocType, setSelectedDocType] = useState('REPORT_05'); // 'REPORT_05' | 'DECISION_39'
+  const [selectedDocType, setSelectedDocType] = useState(initialDocType); // 'REPORT_05' | 'DECISION_39'
   const [period, setPeriod] = useState(initialPeriod);
 
+  // Sync state whenever modal is opened
+  useEffect(() => {
+    if (open) {
+      if (initialPeriod) setPeriod(initialPeriod);
+      if (initialDocType) setSelectedDocType(initialDocType);
+    }
+  }, [open, initialPeriod, initialDocType]);
+
+  // Ngày tháng hiện tại theo chuẩn hành chính
+  const today = new Date();
+  const currentDateFormatted = useMemo(() => {
+    const day = today.getDate();
+    const month = today.getMonth() + 1;
+    const year = today.getFullYear();
+    return `Đắk Lắk, ngày ${day} tháng ${month} năm ${year}`;
+  }, []);
+
   const periodLabel = useMemo(() => {
-    return EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Quý III / 2026';
+    return EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Cả năm 2026';
   }, [period]);
 
+  // Sắp xếp danh sách cán bộ theo điểm giảm dần
+  const displayStaffs = useMemo(() => {
+    return [...staffList].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  }, [staffList]);
+
   // Calculations from staffList
-  const totalStaff = staffList.length;
-  const excellentStaffs = staffList.filter((s) => s.grade === 'Hoàn thành xuất sắc nhiệm vụ');
-  const goodStaffs = staffList.filter((s) => s.grade === 'Hoàn thành tốt nhiệm vụ');
-  const completedStaffs = staffList.filter((s) => s.grade === 'Hoàn thành nhiệm vụ');
-  const failedStaffs = staffList.filter((s) => s.grade === 'Không hoàn thành nhiệm vụ');
+  const totalStaff = displayStaffs.length;
+  const excellentStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành xuất sắc nhiệm vụ');
+  const goodStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành tốt nhiệm vụ');
+  const completedStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành nhiệm vụ');
+  const failedStaffs = displayStaffs.filter((s) => s.grade === 'Không hoàn thành nhiệm vụ');
 
   const excellentCount = excellentStaffs.length;
   const goodCount = goodStaffs.length;
@@ -77,8 +103,92 @@ export default function DocumentGeneratorModal({
     ? (staffList.reduce((sum, s) => sum + (s.totalScore || 0), 0) / totalStaff).toFixed(1)
     : 0;
 
+  // In / Lưu PDF: Chỉ lấy duy nhất phần văn bản hành chính từ Header quốc hiệu đến Nơi nhận và Ký tên
   const handlePrint = () => {
-    window.print();
+    const printContent = document.getElementById('printable-kpi-document');
+    if (!printContent) {
+      window.print();
+      return;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    // Kế thừa toàn bộ style cần thiết từ trang hiện tại
+    const styleTags = Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map((el) => el.outerHTML)
+      .join('\n');
+
+    const doc = iframe.contentWindow.document;
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${selectedDocType === 'REPORT_05' ? 'Báo cáo Tổng hợp Quý' : 'Quyết định Xếp loại'}</title>
+          ${styleTags}
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 15mm 15mm 15mm 20mm;
+            }
+            body {
+              font-family: "Times New Roman", Times, serif !important;
+              font-size: 13pt;
+              line-height: 1.45;
+              color: #000 !important;
+              margin: 0;
+              padding: 0;
+              background: #fff !important;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            #printable-kpi-document {
+              border: none !important;
+              box-shadow: none !important;
+              padding: 0 !important;
+              margin: 0 !important;
+              width: 100% !important;
+              max-width: 100% !important;
+            }
+            table {
+              border-collapse: collapse !important;
+              width: 100% !important;
+            }
+            th, td {
+              border: 1px solid #000 !important;
+              color: #000 !important;
+            }
+            * {
+              box-sizing: border-box;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="printable-kpi-document">
+            ${printContent.innerHTML}
+          </div>
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    iframe.contentWindow.focus();
+    setTimeout(() => {
+      iframe.contentWindow.print();
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 1000);
+    }, 250);
   };
 
   return (
@@ -94,33 +204,57 @@ export default function DocumentGeneratorModal({
         },
       }}
     >
-      <DialogTitle sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <DescriptionRoundedIcon color="primary" sx={{ fontSize: 28 }} />
-            <Box>
-              <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-                Xuất Dự thảo Báo cáo & Quyết định Hành chính
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Tự động kết xuất văn bản chuẩn thể thức hành chính Đảng & Nhà nước (Nghị định 30/2020/NĐ-CP)
-              </Typography>
-            </Box>
+      <DialogTitle
+        sx={{
+          pb: 1,
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          position: 'relative',
+          pr: 7,
+          '@media print': { display: 'none !important' },
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <DescriptionRoundedIcon color="primary" sx={{ fontSize: 28 }} />
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+              Xuất Dự thảo Báo cáo & Quyết định Hành chính
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Tự động kết xuất văn bản chuẩn thể thức hành chính Đảng & Nhà nước (Nghị định 30/2020/NĐ-CP)
+            </Typography>
           </Box>
-          <Button
-            size="small"
-            color="inherit"
-            onClick={onClose}
-            sx={{ minWidth: 36, p: 0.5, borderRadius: '50%' }}
-          >
-            <CloseRoundedIcon />
-          </Button>
-        </Stack>
+        </Box>
+        <IconButton
+          aria-label="close"
+          onClick={onClose}
+          sx={{
+            position: 'absolute',
+            right: 14,
+            top: 14,
+            color: 'text.secondary',
+            '&:hover': {
+              color: 'text.primary',
+              bgcolor: 'action.hover',
+            },
+          }}
+        >
+          <CloseRoundedIcon />
+        </IconButton>
       </DialogTitle>
 
       <DialogContent sx={{ p: 3 }}>
         {/* Controls: Template Selector & Period */}
-        <Paper variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 2, bgcolor: 'background.default' }}>
+        <Paper
+          variant="outlined"
+          sx={{
+            p: 2,
+            mb: 3,
+            borderRadius: 2,
+            bgcolor: 'background.default',
+            '@media print': { display: 'none !important' },
+          }}
+        >
           <Grid container spacing={2} alignItems="center">
             <Grid size={{ xs: 12, md: 7 }}>
               <FormControl component="fieldset">
@@ -200,7 +334,7 @@ export default function DocumentGeneratorModal({
           <Grid container spacing={2} sx={{ mb: 2 }}>
             <Grid size={{ xs: 5 }} sx={{ textAlign: 'center' }}>
               <Typography sx={{ fontFamily: 'inherit', fontSize: '11pt', fontWeight: 'bold', textTransform: 'uppercase', lineHeight: 1.2 }}>
-                TỈNH ỦY THÁI NGUYÊN
+                TỈNH ỦY ĐẮK LẮK
               </Typography>
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', fontWeight: 'bold', textTransform: 'uppercase', lineHeight: 1.2 }}>
                 BAN TỔ CHỨC
@@ -220,7 +354,7 @@ export default function DocumentGeneratorModal({
               </Typography>
               <Divider sx={{ width: '60%', mx: 'auto', my: 0.5, borderColor: '#000', borderWidth: 1 }} />
               <Typography sx={{ fontFamily: 'inherit', fontSize: '11pt', fontStyle: 'italic', mt: 0.5 }}>
-                Thái Nguyên, ngày 16 tháng 10 năm 2026
+                {currentDateFormatted}
               </Typography>
             </Grid>
           </Grid>
@@ -322,6 +456,47 @@ export default function DocumentGeneratorModal({
                 </Table>
               </TableContainer>
 
+              {/* Bảng chi tiết cán bộ trong Báo cáo */}
+              <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', fontWeight: 'bold', mb: 1, mt: 2 }}>
+                Danh sách chi tiết cán bộ, công chức tham gia đánh giá:
+              </Typography>
+              <TableContainer component={Box} sx={{ mb: 2 }}>
+                <Table size="small" sx={{ border: '1px solid #000', '& td, & th': { border: '1px solid #000', fontFamily: 'inherit', fontSize: '10pt', py: 0.6 } }}>
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: '#f0f0f0' }}>
+                      <TableCell align="center" sx={{ fontWeight: 'bold', width: '5%' }}>STT</TableCell>
+                      <TableCell align="center" sx={{ fontWeight: 'bold', width: '13%' }}>Mã CB</TableCell>
+                      <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Họ và tên</TableCell>
+                      <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Phòng ban</TableCell>
+                      <TableCell align="left" sx={{ fontWeight: 'bold', width: '18%' }}>Chức vụ / VTVL</TableCell>
+                      <TableCell align="center" sx={{ fontWeight: 'bold', width: '10%' }}>Tổng điểm</TableCell>
+                      <TableCell align="center" sx={{ fontWeight: 'bold', width: '20%' }}>Mức xếp loại</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {displayStaffs.length > 0 ? (
+                      displayStaffs.map((s, idx) => (
+                        <TableRow key={s.id || idx}>
+                          <TableCell align="center">{idx + 1}</TableCell>
+                          <TableCell align="center">{s.employeeCode}</TableCell>
+                          <TableCell align="left" sx={{ fontWeight: 'bold' }}>{s.name}</TableCell>
+                          <TableCell align="left">{s.deptName}</TableCell>
+                          <TableCell align="left">{s.vtvlTitle}</TableCell>
+                          <TableCell align="center" sx={{ fontWeight: 700 }}>{s.totalScore}</TableCell>
+                          <TableCell align="center">{s.grade}</TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={7} align="center" sx={{ py: 2, fontStyle: 'italic' }}>
+                          Chưa có dữ liệu đánh giá cán bộ trong kỳ này
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12.5pt', fontWeight: 'bold', mb: 1 }}>
                 III. ĐÁNH GIÁ VÀ KIẾN NGHỊ
               </Typography>
@@ -333,7 +508,7 @@ export default function DocumentGeneratorModal({
             </Box>
           )}
 
-          {/* Document Content - OPTION 2: QUYẾT ĐỊNH XẾP LOẠI NĂM */}
+          {/* Document Content - OPTION 2: QUYẾT ĐỊNH XẾP LOẠI NĂM / QUÝ */}
           {selectedDocType === 'DECISION_39' && (
             <Box sx={{ mt: 3 }}>
               <Typography
@@ -358,7 +533,7 @@ export default function DocumentGeneratorModal({
                   mb: 3,
                 }}
               >
-                Về việc công nhận kết quả đánh giá, xếp loại chất lượng cán bộ, công chức năm 2026
+                Về việc công nhận kết quả đánh giá, xếp loại chất lượng cán bộ, công chức {period === 'YEAR_2026' ? 'năm 2026' : periodLabel}
                 <br />
                 <span style={{ fontSize: '11pt', fontWeight: 'normal', fontStyle: 'italic' }}>
                   (Theo Quy định số 39-QĐ/TU của Ban Thường vụ Tỉnh ủy)
@@ -375,7 +550,7 @@ export default function DocumentGeneratorModal({
                   mb: 2,
                 }}
               >
-                TRƯỞNG BAN TỔ CHỨC TỈNH ỦY THÁI NGUYÊN
+                TRƯỞNG BAN TỔ CHỨC TỈNH ỦY ĐẮK LẮK
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '11.5pt', fontStyle: 'italic', textAlign: 'justify', mb: 1, textIndent: '1.27cm' }}>
@@ -402,7 +577,7 @@ export default function DocumentGeneratorModal({
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
-                <strong>Điều 1.</strong> Công nhận kết quả đánh giá, xếp loại chất lượng cán bộ, công chức năm 2026 cho <strong>{totalStaff}</strong> đồng chí, cụ thể:
+                <strong>Điều 1.</strong> Công nhận kết quả đánh giá, xếp loại chất lượng cán bộ, công chức {period === 'YEAR_2026' ? 'năm 2026' : periodLabel} cho <strong>{totalStaff}</strong> đồng chí (có danh sách chi tiết kèm theo), cụ thể:
               </Typography>
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1, pl: 4 }}>
                 1. <strong>Hoàn thành xuất sắc nhiệm vụ:</strong> {excellentCount} đồng chí (chiếm {excellentPct}%).
@@ -418,12 +593,68 @@ export default function DocumentGeneratorModal({
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
-                <strong>Điều 2.</strong> Kết quả này là căn cứ để thực hiện công tác quy hoạch, đào tạo, bổ nhiệm, khen thưởng và thực hiện chính sách cán bộ năm 2026 theo quy định của Đảng và Nhà nước.
+                <strong>Điều 2.</strong> Kết quả này là căn cứ để thực hiện công tác quy hoạch, đào tạo, bổ nhiệm, khen thưởng và thực hiện chính sách cán bộ {period === 'YEAR_2026' ? 'năm 2026' : periodLabel} theo quy định của Đảng và Nhà nước.
               </Typography>
 
-              <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 2, textIndent: '1.27cm' }}>
+              <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 2.5, textIndent: '1.27cm' }}>
                 <strong>Điều 3.</strong> Văn phòng Ban, các phòng chuyên môn và các đồng chí có tên tại Điều 1 chịu trách nhiệm thi hành Quyết định này./.
               </Typography>
+
+              {/* Bảng Phụ Lục Chi Tiết Cán Bộ Kèm Theo Quyết Định */}
+              <Box sx={{ mt: 3, pt: 2, borderTop: '1px solid #000' }}>
+                <Typography
+                  sx={{
+                    fontFamily: 'inherit',
+                    fontSize: '12.5pt',
+                    fontWeight: 'bold',
+                    textAlign: 'center',
+                    textTransform: 'uppercase',
+                    mb: 0.5,
+                  }}
+                >
+                  PHỤ LỤC: DANH SÁCH CHI TIẾT CÁN BỘ, CÔNG CHỨC ĐƯỢC XẾP LOẠI CHẤT LƯỢNG
+                </Typography>
+                <Typography sx={{ fontFamily: 'inherit', fontSize: '11pt', fontStyle: 'italic', textAlign: 'center', mb: 2 }}>
+                  (Kèm theo Quyết định số 256-QĐ/BTCTU của Ban Tổ chức Tỉnh ủy Đắk Lắk)
+                </Typography>
+
+                <TableContainer component={Box} sx={{ mb: 2 }}>
+                  <Table size="small" sx={{ border: '1px solid #000', '& td, & th': { border: '1px solid #000', fontFamily: 'inherit', fontSize: '10pt', py: 0.6 } }}>
+                    <TableHead>
+                      <TableRow sx={{ bgcolor: '#f0f0f0' }}>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '5%' }}>STT</TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '13%' }}>Mã CB</TableCell>
+                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Họ và tên</TableCell>
+                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Phòng ban</TableCell>
+                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '18%' }}>Chức vụ / VTVL</TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '10%' }}>Tổng điểm</TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '20%' }}>Mức xếp loại</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayStaffs.length > 0 ? (
+                        displayStaffs.map((s, idx) => (
+                          <TableRow key={s.id || idx}>
+                            <TableCell align="center">{idx + 1}</TableCell>
+                            <TableCell align="center">{s.employeeCode}</TableCell>
+                            <TableCell align="left" sx={{ fontWeight: 'bold' }}>{s.name}</TableCell>
+                            <TableCell align="left">{s.deptName}</TableCell>
+                            <TableCell align="left">{s.vtvlTitle}</TableCell>
+                            <TableCell align="center" sx={{ fontWeight: 700 }}>{s.totalScore}</TableCell>
+                            <TableCell align="center">{s.grade}</TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={7} align="center" sx={{ py: 2, fontStyle: 'italic' }}>
+                            Chưa có dữ liệu đánh giá cán bộ trong kỳ này
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </Box>
             </Box>
           )}
 
@@ -460,7 +691,16 @@ export default function DocumentGeneratorModal({
         </Paper>
       </DialogContent>
 
-      <DialogActions sx={{ p: 2, px: 3, borderTop: '1px solid', borderColor: 'divider', justifyContent: 'space-between' }}>
+      <DialogActions
+        sx={{
+          p: 2,
+          px: 3,
+          borderTop: '1px solid',
+          borderColor: 'divider',
+          justifyContent: 'space-between',
+          '@media print': { display: 'none !important' },
+        }}
+      >
         <Typography variant="caption" color="text.secondary">
           Mẫu số liệu tự động đồng bộ từ hệ thống tính điểm KPI
         </Typography>
