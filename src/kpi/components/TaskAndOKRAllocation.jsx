@@ -40,7 +40,7 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_OKRS, INITIAL_ASSIGNED_TASKS, INITIAL_MASTER_KPIS } from '../data/mockKPIData';
 import { INITIAL_DEPT_STAFF } from '../kpiData';
-import { INITIAL_DEPARTMENTS } from '../data/organizationData';
+import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../../rbac/AuthContext';
 import { ROLES } from '../../rbac/roles';
@@ -60,30 +60,55 @@ export default function TaskAndOKRAllocation() {
   const [okrs, setOkrs] = useLocalStorage('kpi_okr_list', INITIAL_OKRS);
   const [tasks, setTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
   const [masterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
-  const [staffList] = useLocalStorage('kpi_dept_staff', INITIAL_DEPT_STAFF);
+  const [storedStaffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
 
   const { showToast, ToastComponent } = useToast();
 
-  // Combined assignees
-  const allAssignees = [
-    ...MOCK_USERS.map((u) => ({
-      id: u.id,
-      name: u.name,
-      department: u.department,
-      deptId: u.deptId,
-      title: u.title,
-      role: u.role,
-    })),
-    ...staffList.map((s) => ({
-      id: s.id,
-      name: s.name,
-      department: s.department || 'Phòng Tổ chức đảng - Đảng viên',
-      deptId: s.deptId || 'DEP_TCD',
-      title: s.title || 'Chuyên viên',
-      role: s.role || ROLES.STAFF,
-    })),
-  ];
+  // Combined assignees from storedStaffs, MOCK_USERS and INITIAL_DEPT_STAFF
+  const allAssignees = useMemo(() => {
+    const map = new Map();
+
+    (storedStaffs || []).forEach((s) => {
+      const deptObj = departments.find((d) => d.id === s.deptId);
+      map.set(s.id, {
+        id: s.id,
+        name: s.name,
+        department: s.department || (deptObj ? deptObj.name : 'Phòng chuyên môn'),
+        deptId: s.deptId,
+        title: s.title || 'Chuyên viên',
+        role: s.role || ROLES.STAFF,
+      });
+    });
+
+    MOCK_USERS.forEach((u) => {
+      if (!map.has(u.id)) {
+        map.set(u.id, {
+          id: u.id,
+          name: u.name,
+          department: u.department,
+          deptId: u.deptId,
+          title: u.title,
+          role: u.role,
+        });
+      }
+    });
+
+    INITIAL_DEPT_STAFF.forEach((ds) => {
+      if (!map.has(ds.id)) {
+        map.set(ds.id, {
+          id: ds.id,
+          name: ds.name,
+          department: ds.department || 'Phòng Tổ chức đảng - Đảng viên',
+          deptId: ds.deptId || 'DEP_TCD',
+          title: ds.title || 'Chuyên viên',
+          role: ds.role || ROLES.STAFF,
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [storedStaffs, departments]);
 
   const getAvailableSubordinates = () => {
     if (isBanLeader) {
@@ -369,6 +394,7 @@ export default function TaskAndOKRAllocation() {
     setCurrentTaskId(null);
     const defaultSub = eligibleSubordinates[0] || allAssignees[0];
     const defaultMaster = masterKPIs[0] || { code: 'A.001', title: 'Thẩm định hồ sơ', outputProduct: 'Tờ trình' };
+    const defaultFactor = Number(defaultMaster.conversionFactor ?? defaultMaster.multiplier ?? 1.0);
     setTaskFormData({
       taskName: defaultMaster.title,
       staffId: defaultSub?.id || '',
@@ -376,6 +402,8 @@ export default function TaskAndOKRAllocation() {
       staffDept: defaultSub?.department || defaultSub?.title || 'Phòng chuyên môn',
       masterCode: defaultMaster.code,
       outputProduct: defaultMaster.outputProduct,
+      multiplier: defaultFactor,
+      conversionFactor: defaultFactor,
       targetQty: 5,
       unit: 'Hồ sơ',
       startDate: new Date().toISOString().split('T')[0],
@@ -429,11 +457,14 @@ export default function TaskAndOKRAllocation() {
 
   const handleMasterKPIChangeInForm = (code) => {
     const found = masterKPIs.find((m) => m.code === code);
+    const factor = found ? Number(found.conversionFactor ?? found.multiplier ?? 1.0) : 1.0;
     setTaskFormData((prev) => ({
       ...prev,
       masterCode: code,
       taskName: found ? found.title : prev.taskName,
       outputProduct: found ? found.outputProduct : prev.outputProduct,
+      multiplier: factor,
+      conversionFactor: factor,
     }));
   };
 
@@ -675,6 +706,7 @@ export default function TaskAndOKRAllocation() {
                 return (
                   <Accordion key={okr.id} variant="outlined" sx={{ borderRadius: 2, '&:before': { display: 'none' } }}>
                     <AccordionSummary
+                      component="div"
                       expandIcon={<ExpandMoreRoundedIcon />}
                       sx={{
                         px: 2.5,
@@ -898,19 +930,47 @@ export default function TaskAndOKRAllocation() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <Avatar sx={{ width: 30, height: 30, bgcolor: 'primary.main', fontSize: '0.75rem', fontWeight: 700 }}>
-                            {t.staffName.charAt(0)}
-                          </Avatar>
-                          <Box>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                              {t.staffName}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {t.staffDept}
-                            </Typography>
-                          </Box>
-                        </Stack>
+                        {(() => {
+                          const isMe =
+                            t.staffId === currentUser?.id ||
+                            t.staffName === currentUser?.name ||
+                            (currentUser?.name && t.staffName && t.staffName.toLowerCase() === currentUser.name.toLowerCase());
+
+                          return isMe ? (
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Avatar sx={{ width: 30, height: 30, bgcolor: 'secondary.main', fontSize: '0.75rem', fontWeight: 700 }}>
+                                Bạn
+                              </Avatar>
+                              <Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                                    Bạn
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    ({t.staffName})
+                                  </Typography>
+                                </Box>
+                                <Typography variant="caption" color="text.secondary">
+                                  {t.staffDept}
+                                </Typography>
+                              </Box>
+                            </Stack>
+                          ) : (
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Avatar sx={{ width: 30, height: 30, bgcolor: 'primary.main', fontSize: '0.75rem', fontWeight: 700 }}>
+                                {t.staffName ? t.staffName.charAt(0) : 'C'}
+                              </Avatar>
+                              <Box>
+                                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                  {t.staffName}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                  {t.staffDept}
+                                </Typography>
+                              </Box>
+                            </Stack>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>
                         <Box sx={{ width: 140 }}>

@@ -77,6 +77,8 @@ export default function DocumentGeneratorModal({
     return EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Cả năm 2026';
   }, [period]);
 
+  const isYearPeriod = Boolean(period && (period.startsWith('YEAR_') || period.includes('Năm') || period === 'YEAR_2026'));
+
   // Sắp xếp danh sách cán bộ theo điểm giảm dần
   const displayStaffs = useMemo(() => {
     return [...staffList].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
@@ -623,12 +625,23 @@ export default function DocumentGeneratorModal({
                     <TableHead>
                       <TableRow sx={{ bgcolor: '#f0f0f0' }}>
                         <TableCell align="center" sx={{ fontWeight: 'bold', width: '5%' }}>STT</TableCell>
-                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '13%' }}>Mã CB</TableCell>
-                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Họ và tên</TableCell>
-                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '22%' }}>Phòng ban</TableCell>
-                        <TableCell align="left" sx={{ fontWeight: 'bold', width: '18%' }}>Chức vụ / VTVL</TableCell>
-                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '10%' }}>Tổng điểm</TableCell>
-                        <TableCell align="center" sx={{ fontWeight: 'bold', width: '20%' }}>Mức xếp loại</TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: isYearPeriod ? '10%' : '12%' }}>Mã CB</TableCell>
+                        <TableCell align="left" sx={{ fontWeight: 'bold', width: isYearPeriod ? '18%' : '22%' }}>Họ và tên</TableCell>
+                        <TableCell align="left" sx={{ fontWeight: 'bold', width: isYearPeriod ? '21%' : '20%' }}>
+                          {isYearPeriod ? 'Phòng ban / VTVL' : 'Phòng ban'}
+                        </TableCell>
+                        {!isYearPeriod && (
+                          <TableCell align="left" sx={{ fontWeight: 'bold', width: '18%' }}>Chức vụ / VTVL</TableCell>
+                        )}
+                        {isYearPeriod && (
+                          <TableCell align="center" sx={{ fontWeight: 'bold', width: '14%' }}>Điểm TB 4 Quý</TableCell>
+                        )}
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: isYearPeriod ? '14%' : '10%' }}>
+                          {isYearPeriod ? 'Điểm Cả Năm' : 'Tổng điểm'}
+                        </TableCell>
+                        <TableCell align="center" sx={{ fontWeight: 'bold', width: isYearPeriod ? '18%' : '18%' }}>
+                          {isYearPeriod ? 'Xếp loại chính thức' : 'Mức xếp loại'}
+                        </TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -638,10 +651,29 @@ export default function DocumentGeneratorModal({
                             <TableCell align="center">{idx + 1}</TableCell>
                             <TableCell align="center">{s.employeeCode}</TableCell>
                             <TableCell align="left" sx={{ fontWeight: 'bold' }}>{s.name}</TableCell>
-                            <TableCell align="left">{s.deptName}</TableCell>
-                            <TableCell align="left">{s.vtvlTitle}</TableCell>
-                            <TableCell align="center" sx={{ fontWeight: 700 }}>{s.totalScore}</TableCell>
-                            <TableCell align="center">{s.grade}</TableCell>
+                            <TableCell align="left">
+                              {s.deptName}
+                              {isYearPeriod && s.vtvlTitle ? ` - ${s.vtvlTitle}` : ''}
+                            </TableCell>
+                            {!isYearPeriod && (
+                              <TableCell align="left">{s.vtvlTitle}</TableCell>
+                            )}
+                            {isYearPeriod && (
+                              <TableCell align="center" sx={{ fontWeight: 600 }}>
+                                {s.quarterlyAvgScore && Number(s.quarterlyAvgScore) > 0 ? `${s.quarterlyAvgScore}đ` : '—'}
+                              </TableCell>
+                            )}
+                            <TableCell align="center" sx={{ fontWeight: 700, color: '#0d47a1' }}>
+                              {s.totalScore !== null && s.totalScore !== undefined ? s.totalScore : '—'}
+                            </TableCell>
+                            <TableCell align="center" sx={{ fontWeight: 600 }}>
+                              {s.grade}
+                              {s.isCapped && (
+                                <span style={{ display: 'block', fontSize: '8.5pt', color: '#c62828', fontStyle: 'italic', fontWeight: 'normal' }}>
+                                  (Khống chế theo HD 05)
+                                </span>
+                              )}
+                            </TableCell>
                           </TableRow>
                         ))
                       ) : (

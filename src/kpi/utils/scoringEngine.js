@@ -1,10 +1,11 @@
 /**
  * Auto-Scoring Engine for KPI Evaluation System
- * Conforms to Chuẩn Phụ lục 2 - Hướng dẫn 05-HD/TU (Thang điểm 100: 70đ KPI + 30đ Phẩm chất)
+ * Conforms to Chuẩn 4 trục A, B, C, D của Ban Tổ chức Tỉnh ủy (BTCTU)
+ * & Hướng dẫn 05-HD/TU (Thang điểm 100: 70đ KPI + 30đ Phẩm chất)
  */
 
 /**
- * Tính điểm đạt được cho 1 nhiệm vụ/tiêu chí:
+ * Tính điểm đạt được cho 1 nhiệm vụ/tiêu chí đơn lẻ:
  * Điểm đạt = (actual / target) * baseScore.
  *
  * @param {number} actual - Khối lượng / Số lượng sản phẩm thực tế đã hoàn thành
@@ -25,9 +26,182 @@ export function calculateTaskScore(actual = 0, target = 1, baseScore = 10) {
 }
 
 /**
- * Tính tổng điểm KPI tự động cho user theo Hướng dẫn 05-HD/TU (Max 70đ):
- * - Staff: personalRate = sum(actual/target) / tasks.length * 100. totalKPIScore = 70 * (personalRate / 100).
- * - Lãnh đạo (DEPT_LEADER & BAN_LEADER): (((personalRate * 3) + leadershipRate) / 400) * 70.
+ * Tính toán tổng hợp KPI chuẩn cuối Quý theo 4 trục A, B, C, D:
+ *
+ * - BƯỚC 1: TÍNH CÁC CHỈ SỐ QUY ĐỔI CHO TỪNG TASK
+ *   + TargetQuyDoi = task.targetQty * task.multiplier
+ *   + ActualQuyDoi = task.actualQty * task.multiplier
+ *   + ChatLuongQuyDoi = ActualQuyDoi - (ActualQuyDoi * (task.reworkCount || 0) * 0.25)
+ *   + effectiveLateCount = task.isObjectiveLate ? 0 : (task.lateCount || 0)
+ *   + TienDoQuyDoi = ActualQuyDoi - (ActualQuyDoi * effectiveLateCount * 0.25)
+ *
+ * - BƯỚC 2: TÍNH TỶ LỆ TRỤC A, B, C DỰA TRÊN TỔNG TẤT CẢ TASK TRONG KẾ HOẠCH QUÝ
+ *   + Rate_A = (Sum(ActualQuyDoi) / Sum(TargetQuyDoi)) * 100 (Khối lượng)
+ *   + Rate_B = (Sum(ChatLuongQuyDoi) / Sum(TargetQuyDoi)) * 100 (Chất lượng)
+ *   + Rate_C = (Sum(TienDoQuyDoi) / Sum(TargetQuyDoi)) * 100 (Tiến độ)
+ *
+ * - BƯỚC 3: TÍNH TRỤC D (Năng lực Lãnh đạo - Chỉ áp dụng cho DEPT_LEADER và BAN_LEADER)
+ *   + D1 (Đơn vị): Tự động tính, nếu 100% cấp dưới có finalScore >= 50đ -> D1 = 100%, ngược lại D1 = 50%
+ *   + D2 (Triển khai): Lấy từ input chọn lựa của Lãnh đạo (100% hoặc 50%)
+ *   + D3 (Đoàn kết): Lấy từ input chọn lựa của Lãnh đạo (100% hoặc 50%)
+ *   + Rate_D = (D1 + D2 + D3) / 3
+ *
+ * - BƯỚC 4: QUY ĐỔI RA ĐIỂM KPI CHÍNH THỨC CUỐI QUÝ (MAX 70đ)
+ *   + Đối với STAFF: KPI_Rate = (Rate_A + Rate_B + Rate_C) / 3
+ *   + Đối với LÃNH ĐẠO: KPI_Rate = (Rate_A + Rate_B + Rate_C + Rate_D) / 4
+ *   + finalKPIScore = Math.min(70, Math.round((KPI_Rate * 0.7) * 100) / 100)
+ *
+ * @param {Array<Object>} tasksOfQuarter - Danh sách các nhiệm vụ được giao trong quý
+ * @param {Object} [leadershipData] - Dữ liệu trục D { d1, d2, d3, subordinates }
+ * @param {boolean} [isLeader=false] - True nếu người được đánh giá là Lãnh đạo
+ * @returns {Object} Chi tiết 4 trục A, B, C, D và điểm số chốt cuối quý
+ */
+export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null, isLeader = false) {
+  if (!Array.isArray(tasksOfQuarter) || tasksOfQuarter.length === 0) {
+    return {
+      rateA: 0,
+      rateB: 0,
+      rateC: 0,
+      rateD: isLeader ? 100 : null,
+      d1: isLeader ? 100 : null,
+      d2: isLeader ? 100 : null,
+      d3: isLeader ? 100 : null,
+      kpiRate: 0,
+      finalKPIScore: 0,
+      sumTargetQuyDoi: 0,
+      sumActualQuyDoi: 0,
+      sumChatLuongQuyDoi: 0,
+      sumTienDoQuyDoi: 0,
+      tasksDetail: [],
+      convertedTasks: [],
+    };
+  }
+
+  // BƯỚC 1: TÍNH CÁC CHỈ SỐ QUY ĐỔI CHO TỪNG TASK
+  let sumTargetQuyDoi = 0;
+  let sumActualQuyDoi = 0;
+  let sumChatLuongQuyDoi = 0;
+  let sumTienDoQuyDoi = 0;
+
+  const convertedTasks = tasksOfQuarter.map((task) => {
+    const targetQty = Number(task.targetQty) || Number(task.target) || 1;
+    const actualQty = task.actualQty !== undefined
+      ? Number(task.actualQty)
+      : task.currentValue !== undefined
+      ? Number(task.currentValue)
+      : Number(task.actual) || 0;
+
+    // Multiplier / Hệ số quy đổi (mặc định 1.0)
+    const multiplier = Number(task.multiplier || task.conversionFactor || 1.0);
+
+    const targetQuyDoi = Math.round(targetQty * multiplier * 100) / 100;
+    const actualQuyDoi = Math.round(actualQty * multiplier * 100) / 100;
+
+    // Trừ 25% cho mỗi lần bị yêu cầu làm lại / sửa đổi do sai sót (Trục B)
+    const reworkCount = Math.max(0, Number(task.reworkCount) || 0);
+    const chatLuongQuyDoi = Math.max(0, Math.round((actualQuyDoi - (actualQuyDoi * reworkCount * 0.25)) * 100) / 100);
+
+    // Kiểm tra chậm tiến độ (Trục C): nếu lý do khách quan thì bỏ qua việc trừ 25%
+    const effectiveLateCount = task.isObjectiveLate ? 0 : Math.max(0, Number(task.lateCount) || 0);
+    const tienDoQuyDoi = Math.max(0, Math.round((actualQuyDoi - (actualQuyDoi * effectiveLateCount * 0.25)) * 100) / 100);
+
+    sumTargetQuyDoi += targetQuyDoi;
+    sumActualQuyDoi += actualQuyDoi;
+    sumChatLuongQuyDoi += chatLuongQuyDoi;
+    sumTienDoQuyDoi += tienDoQuyDoi;
+
+    return {
+      ...task,
+      targetQty,
+      actualQty,
+      multiplier,
+      targetQuyDoi,
+      actualQuyDoi,
+      chatLuongQuyDoi,
+      reworkCount,
+      effectiveLateCount,
+      tienDoQuyDoi,
+      isObjectiveLate: Boolean(task.isObjectiveLate),
+      objectiveLateReason: task.objectiveLateReason || '',
+    };
+  });
+
+  // BƯỚC 2: TÍNH TỶ LỆ TRỤC A, B, C DỰA TRÊN TỔNG TẤT CẢ TASK TRONG KẾ HOẠCH QUÝ
+  const rateA = sumTargetQuyDoi > 0 ? (sumActualQuyDoi / sumTargetQuyDoi) * 100 : 0;
+  const rateB = sumTargetQuyDoi > 0 ? (sumChatLuongQuyDoi / sumTargetQuyDoi) * 100 : 0;
+  const rateC = sumTargetQuyDoi > 0 ? (sumTienDoQuyDoi / sumTargetQuyDoi) * 100 : 0;
+
+  // BƯỚC 3: TÍNH TRỤC D (Năng lực Lãnh đạo - Chỉ áp dụng cho DEPT_LEADER và BAN_LEADER)
+  let d1 = 100;
+  let d2 = 100;
+  let d3 = 100;
+  let rateD = null;
+
+  if (isLeader) {
+    // D1 (Đơn vị): Ưu tiên lấy d1 truyền vào từ component (đã kiểm tra hồ sơ cấp dưới)
+    if (leadershipData?.d1 !== undefined && leadershipData?.d1 !== null) {
+      d1 = Number(leadershipData.d1);
+    } else if (leadershipData?.subordinates && Array.isArray(leadershipData.subordinates) && leadershipData.subordinates.length > 0) {
+      // Tự động tính, nếu có cấp dưới chưa đạt >= 50đ -> D1 = 50%, ngược lại D1 = 100%
+      const hasFailedStaff = leadershipData.subordinates.some((sub) => {
+        const score = sub.totalScore !== undefined
+          ? sub.totalScore
+          : sub.finalScore !== undefined
+          ? sub.finalScore
+          : sub.score !== undefined
+          ? sub.score
+          : null;
+        return score === null || score < 50;
+      });
+      d1 = hasFailedStaff ? 50 : 100;
+    }
+
+    // D2 (Triển khai): Lấy từ input chọn lựa của Lãnh đạo (100% hoặc 50%)
+    if (leadershipData?.d2 !== undefined) {
+      d2 = Number(leadershipData.d2) || 100;
+    }
+
+    // D3 (Đoàn kết): Lấy từ input chọn lựa của Lãnh đạo (100% hoặc 50%)
+    if (leadershipData?.d3 !== undefined) {
+      d3 = Number(leadershipData.d3) || 100;
+    }
+
+    rateD = (d1 + d2 + d3) / 3;
+  }
+
+  // BƯỚC 4: QUY ĐỔI RA ĐIỂM KPI CHÍNH THỨC CUỐI QUÝ (MAX 70đ)
+  let kpiRate = 0;
+  if (!isLeader) {
+    kpiRate = (rateA + rateB + rateC) / 3;
+  } else {
+    kpiRate = (rateA + rateB + rateC + (rateD ?? 100)) / 4;
+  }
+
+  const rawFinalScore = kpiRate * 0.7;
+  const finalKPIScore = Math.min(70, Math.max(0, Math.round(rawFinalScore * 100) / 100));
+
+  return {
+    rateA: Math.round(rateA * 100) / 100,
+    rateB: Math.round(rateB * 100) / 100,
+    rateC: Math.round(rateC * 100) / 100,
+    rateD: isLeader && rateD !== null ? Math.round(rateD * 100) / 100 : null,
+    d1: isLeader ? d1 : null,
+    d2: isLeader ? d2 : null,
+    d3: isLeader ? d3 : null,
+    kpiRate: Math.round(kpiRate * 100) / 100,
+    finalKPIScore,
+    sumTargetQuyDoi: Math.round(sumTargetQuyDoi * 100) / 100,
+    sumActualQuyDoi: Math.round(sumActualQuyDoi * 100) / 100,
+    sumChatLuongQuyDoi: Math.round(sumChatLuongQuyDoi * 100) / 100,
+    sumTienDoQuyDoi: Math.round(sumTienDoQuyDoi * 100) / 100,
+    tasksDetail: convertedTasks,
+    convertedTasks,
+  };
+}
+
+/**
+ * Tính tổng điểm KPI tự động cho user theo Hướng dẫn 05-HD/TU (Max 70đ)
+ * Tương thích ngược với các components cũ, tích hợp công thức chuẩn 4 trục A, B, C, D
  *
  * @param {Array<Object>} tasks - Danh sách nhiệm vụ của user
  * @param {Object} [currentUser] - Thông tin user hiện tại
@@ -37,64 +211,35 @@ export function calculateTaskScore(actual = 0, target = 1, baseScore = 10) {
 export function calculateTotalKPIScore(tasks = [], currentUser = null, allUsersData = []) {
   if (!Array.isArray(tasks) || tasks.length === 0) return 0;
 
-  // 1. Tính personalRate (% hoàn thành cá nhân): sum(actual/target) / tasks.length * 100
-  let sumRatio = 0;
-  tasks.forEach((task) => {
-    const actual = task.currentValue !== undefined ? Number(task.currentValue) || 0 : task.actual !== undefined ? Number(task.actual) || 0 : 0;
-    let target = 1;
-    if (task.targetQty !== undefined) {
-      target = Number(task.targetQty) || 1;
-    } else if (task.target !== undefined) {
-      target = typeof task.target === 'number' ? task.target : parseFloat(task.target) || 1;
-    }
-    const ratio = target > 0 ? actual / target : 0;
-    sumRatio += ratio;
-  });
+  const isLeader = Boolean(
+    currentUser &&
+    (currentUser.role === 'DEPT_LEADER' ||
+      currentUser.role === 'DEPT_HEAD' ||
+      currentUser.role === 'BAN_LEADER')
+  );
 
-  const personalRate = (sumRatio / tasks.length) * 100;
-
-  // 2. Tính leadershipRate (% năng lực quản lý điều hành - chỉ áp dụng cho Lãnh đạo)
-  let leadershipRate = 100;
-  if (currentUser) {
-    const role = currentUser.role;
-    if (role === 'DEPT_LEADER' || role === 'DEPT_HEAD') {
-      // Lấy list STAFF cùng phòng
-      const deptId = currentUser.deptId;
-      const subordinates = allUsersData.filter(
-        (u) => (u.deptId === deptId || u.department === currentUser.department) && u.role === 'STAFF'
+  let subordinates = [];
+  if (isLeader && Array.isArray(allUsersData)) {
+    if (currentUser.role === 'DEPT_LEADER' || currentUser.role === 'DEPT_HEAD') {
+      subordinates = allUsersData.filter(
+        (u) =>
+          (u.deptId === currentUser.deptId || u.department === currentUser.department) &&
+          u.role === 'STAFF'
       );
-      // Kiểm tra nếu có STAFF nào bị xếp loại "Không hoàn thành nhiệm vụ" (<50đ tổng)
-      const hasFailedStaff = subordinates.some((sub) => {
-        const score = sub.totalScore !== undefined ? sub.totalScore : sub.score || 70;
-        return score < 50;
-      });
-      leadershipRate = hasFailedStaff ? 50 : 100;
-    } else if (role === 'BAN_LEADER') {
-      // Lấy list DEPT_LEADER thuộc các phòng trong managedDepartments
+    } else if (currentUser.role === 'BAN_LEADER') {
       const managedDepts = currentUser.managedDepartments || [];
-      const deptLeaders = allUsersData.filter(
-        (u) => (managedDepts.includes(u.deptId) || u.role === 'DEPT_HEAD' || u.role === 'DEPT_LEADER') && u.id !== currentUser.id
+      subordinates = allUsersData.filter(
+        (u) =>
+          u.id !== currentUser.id &&
+          (managedDepts.includes(u.deptId) ||
+            u.role === 'DEPT_HEAD' ||
+            u.role === 'DEPT_LEADER')
       );
-      const hasFailedDept = deptLeaders.some((leader) => {
-        const score = leader.totalScore !== undefined ? leader.totalScore : leader.score || 70;
-        return score < 50;
-      });
-      leadershipRate = hasFailedDept ? 50 : 100;
     }
   }
 
-  // 3. Tính điểm số (Max 70):
-  let score = 0;
-  const isLeader = currentUser && (currentUser.role === 'DEPT_LEADER' || currentUser.role === 'DEPT_HEAD' || currentUser.role === 'BAN_LEADER');
-
-  if (!isLeader || !currentUser) {
-    score = 70 * (personalRate / 100);
-  } else {
-    score = 70 * (((personalRate * 3) + leadershipRate) / 400);
-  }
-
-  const cappedScore = Math.min(70, Math.max(0, score));
-  return Math.round(cappedScore * 100) / 100;
+  const result = calculateQuarterlyKPI(tasks, { subordinates }, isLeader);
+  return result.finalKPIScore;
 }
 
 /**
@@ -108,13 +253,10 @@ export function calculateTotalKPIScore(tasks = [], currentUser = null, allUsersD
  * @param {boolean} [hasBonusTasks=false] - Cờ có nhiệm vụ vượt mức / sáng kiến / bonus
  * @returns {string} Xếp loại kết quả
  */
-export function determineGrade(totalScore = 0, hasBonusTasks = false) {
+export function determineGrade(totalScore = 0) {
   const score = Number(totalScore) || 0;
   if (score >= 90) {
-    if (hasBonusTasks) {
-      return 'Hoàn thành xuất sắc nhiệm vụ';
-    }
-    return 'Hoàn thành tốt nhiệm vụ';
+    return 'Hoàn thành xuất sắc nhiệm vụ';
   }
   if (score >= 70) {
     return 'Hoàn thành tốt nhiệm vụ';
@@ -124,3 +266,253 @@ export function determineGrade(totalScore = 0, hasBonusTasks = false) {
   }
   return 'Không hoàn thành nhiệm vụ';
 }
+
+/**
+ * ============================================================================
+ * MODULE ĐÁNH GIÁ & XẾP LOẠI CẢ NĂM (THEO HƯỚNG DẪN 05-HD/TU CỦA BTCTU)
+ * ============================================================================
+ */
+
+/**
+ * Tính toán tổng hợp KPI Cả Năm theo chuẩn 4 trục A, B, C, D:
+ *
+ * - BƯỚC 1: TÍNH CÁC CHỈ SỐ QUY ĐỔI CHO TỪNG TASK TRONG NĂM
+ *   (Tự động loại bỏ các nhiệm vụ đang ở trạng thái 'Chờ duyệt')
+ *   + TargetQuyDoi = task.targetQty * task.multiplier
+ *   + ActualQuyDoi = task.actualQty * task.multiplier
+ *   + ChatLuongQuyDoi = ActualQuyDoi - (ActualQuyDoi * (task.reworkCount || 0) * 0.25)
+ *   + effectiveLateCount = task.isObjectiveLate ? 0 : (task.lateCount || 0)
+ *   + TienDoQuyDoi = ActualQuyDoi - (ActualQuyDoi * effectiveLateCount * 0.25)
+ *
+ * - BƯỚC 2: TÍNH TỶ LỆ TRỤC A, B, C TÍCH LŨY 12 THÁNG
+ *   + Rate_A = (Sum(ActualQuyDoi) / Sum(TargetQuyDoi)) * 100 (Khối lượng)
+ *   + Rate_B = (Sum(ChatLuongQuyDoi) / Sum(TargetQuyDoi)) * 100 (Chất lượng)
+ *   + Rate_C = (Sum(TienDoQuyDoi) / Sum(TargetQuyDoi)) * 100 (Tiến độ)
+ *
+ * - BƯỚC 3: TÍNH TRỤC D (Năng lực Lãnh đạo Cả Năm - Nếu là Lãnh đạo)
+ *   + Rate_D = (D1 + D2 + D3) / 3
+ *
+ * - BƯỚC 4: QUY ĐỔI RA ĐIỂM KPI CẢ NĂM (MAX 70đ)
+ *   + Nếu là STAFF: KPI_Rate = (Rate_A + Rate_B + Rate_C) / 3
+ *   + Nếu là LÃNH ĐẠO: KPI_Rate = (Rate_A + Rate_B + Rate_C + Rate_D) / 4
+ *   + yearlyKPIScore = Math.min(70, Math.round((KPI_Rate * 0.7) * 100) / 100)
+ *
+ * @param {Array<Object>} allTasksOfYear - Danh sách tất cả nhiệm vụ trong cả 4 Quý của năm
+ * @param {Object} [leadershipData] - Dữ liệu trục D cả năm { d1, d2, d3, subordinates }
+ * @param {boolean} [isLeader=false] - True nếu người được đánh giá là Lãnh đạo
+ * @returns {Object} Chi tiết 4 trục A, B, C, D và điểm số KPI cả năm (Max 70đ)
+ */
+export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, isLeader = false) {
+  // Lọc chỉ tính những nhiệm vụ đã được duyệt (loại bỏ 'Chờ duyệt')
+  const validTasks = (Array.isArray(allTasksOfYear) ? allTasksOfYear : []).filter(
+    (t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt'
+  );
+
+  if (validTasks.length === 0) {
+    return {
+      rateA: 0,
+      rateB: 0,
+      rateC: 0,
+      rateD: isLeader ? 100 : null,
+      d1: isLeader ? 100 : null,
+      d2: isLeader ? 100 : null,
+      d3: isLeader ? 100 : null,
+      kpiRate: 0,
+      finalKPIScore: 0,
+      yearlyKPIScore: 0,
+      sumTargetQuyDoi: 0,
+      sumActualQuyDoi: 0,
+      sumChatLuongQuyDoi: 0,
+      sumTienDoQuyDoi: 0,
+      tasksDetail: [],
+      convertedTasks: [],
+    };
+  }
+
+  // BƯỚC 1: Quy đổi từng Task
+  let sumTargetQuyDoi = 0;
+  let sumActualQuyDoi = 0;
+  let sumChatLuongQuyDoi = 0;
+  let sumTienDoQuyDoi = 0;
+
+  const convertedTasks = validTasks.map((task) => {
+    const mult = Number(task.multiplier ?? task.conversionFactor ?? 1.0) || 1.0;
+    const targetQty = Number(task.targetQty ?? task.target ?? 1) || 1;
+    const actualQty = Number(task.actualQty ?? task.currentValue ?? 0) || 0;
+    const reworkCount = Number(task.reworkCount ?? 0) || 0;
+    const lateCount = Number(task.lateCount ?? 0) || 0;
+    const isObjectiveLate = Boolean(task.isObjectiveLate);
+
+    const targetQuyDoi = targetQty * mult;
+    const actualQuyDoi = actualQty * mult;
+
+    // Trừ 25% cho mỗi lần phải làm lại
+    const chatLuongQuyDoi = Math.max(0, actualQuyDoi - actualQuyDoi * reworkCount * 0.25);
+
+    // Trừ 25% cho mỗi lần trễ hạn chủ quan (nếu trễ khách quan -> không bị trừ)
+    const effectiveLateCount = isObjectiveLate ? 0 : lateCount;
+    const tienDoQuyDoi = Math.max(0, actualQuyDoi - actualQuyDoi * effectiveLateCount * 0.25);
+
+    sumTargetQuyDoi += targetQuyDoi;
+    sumActualQuyDoi += actualQuyDoi;
+    sumChatLuongQuyDoi += chatLuongQuyDoi;
+    sumTienDoQuyDoi += tienDoQuyDoi;
+
+    return {
+      ...task,
+      multiplier: mult,
+      targetQuyDoi: Math.round(targetQuyDoi * 100) / 100,
+      actualQuyDoi: Math.round(actualQuyDoi * 100) / 100,
+      chatLuongQuyDoi: Math.round(chatLuongQuyDoi * 100) / 100,
+      tienDoQuyDoi: Math.round(tienDoQuyDoi * 100) / 100,
+      effectiveLateCount,
+    };
+  });
+
+  // BƯỚC 2: Tỷ lệ trục A, B, C tích lũy 12 tháng
+  let rateA = 0;
+  let rateB = 0;
+  let rateC = 0;
+
+  if (sumTargetQuyDoi > 0) {
+    rateA = (sumActualQuyDoi / sumTargetQuyDoi) * 100;
+    rateB = (sumChatLuongQuyDoi / sumTargetQuyDoi) * 100;
+    rateC = (sumTienDoQuyDoi / sumTargetQuyDoi) * 100;
+  }
+
+  // BƯỚC 3: Trục D Cả Năm (Nếu là Lãnh đạo)
+  let d1 = 100;
+  let d2 = 100;
+  let d3 = 100;
+  let rateD = null;
+
+  if (isLeader) {
+    if (leadershipData?.d1 !== undefined) {
+      d1 = Number(leadershipData.d1) || 100;
+    } else if (Array.isArray(leadershipData?.subordinates) && leadershipData.subordinates.length > 0) {
+      const hasFailedStaff = leadershipData.subordinates.some((sub) => {
+        const score = sub.totalScore !== undefined
+          ? sub.totalScore
+          : sub.finalScore !== undefined
+          ? sub.finalScore
+          : sub.score !== undefined
+          ? sub.score
+          : null;
+        return score === null || score < 50;
+      });
+      d1 = hasFailedStaff ? 50 : 100;
+    }
+
+    if (leadershipData?.d2 !== undefined) {
+      d2 = Number(leadershipData.d2) || 100;
+    }
+    if (leadershipData?.d3 !== undefined) {
+      d3 = Number(leadershipData.d3) || 100;
+    }
+
+    rateD = (d1 + d2 + d3) / 3;
+  }
+
+  // BƯỚC 4: Quy đổi ra điểm KPI Cả Năm (Max 70đ)
+  let kpiRate = 0;
+  if (!isLeader) {
+    kpiRate = (rateA + rateB + rateC) / 3;
+  } else {
+    kpiRate = (rateA + rateB + rateC + (rateD ?? 100)) / 4;
+  }
+
+  const rawFinalScore = kpiRate * 0.7;
+  const yearlyKPIScore = Math.min(70, Math.max(0, Math.round(rawFinalScore * 100) / 100));
+
+  return {
+    rateA: Math.round(rateA * 100) / 100,
+    rateB: Math.round(rateB * 100) / 100,
+    rateC: Math.round(rateC * 100) / 100,
+    rateD: isLeader && rateD !== null ? Math.round(rateD * 100) / 100 : null,
+    d1: isLeader ? d1 : null,
+    d2: isLeader ? d2 : null,
+    d3: isLeader ? d3 : null,
+    kpiRate: Math.round(kpiRate * 100) / 100,
+    finalKPIScore: yearlyKPIScore,
+    yearlyKPIScore,
+    sumTargetQuyDoi: Math.round(sumTargetQuyDoi * 100) / 100,
+    sumActualQuyDoi: Math.round(sumActualQuyDoi * 100) / 100,
+    sumChatLuongQuyDoi: Math.round(sumChatLuongQuyDoi * 100) / 100,
+    sumTienDoQuyDoi: Math.round(sumTienDoQuyDoi * 100) / 100,
+    tasksDetail: convertedTasks,
+    convertedTasks,
+  };
+}
+
+/**
+ * Kiểm tra điều kiện khống chế xếp loại Cả Năm theo Hướng dẫn 05-HD/TU:
+ * Nếu có ÍT NHẤT 01 QUÝ bị xếp loại "Không hoàn thành nhiệm vụ" (< 50 điểm),
+ * cán bộ sẽ bị KHỐNG CHẾ xếp loại Cả Năm tối đa chỉ được "Hoàn thành tốt nhiệm vụ"
+ * (kể cả khi tổng điểm Cả Năm >= 90 điểm).
+ *
+ * @param {Array<Object>} quarterlyResults - Kết quả đánh giá các quý trong năm của cán bộ
+ * @returns {{ isCapped: boolean, failedQuarters: string[], reason: string }}
+ */
+export function checkYearlyGradeCap(quarterlyResults = []) {
+  if (!Array.isArray(quarterlyResults) || quarterlyResults.length === 0) {
+    return { isCapped: false, failedQuarters: [], reason: '' };
+  }
+
+  const failed = quarterlyResults.filter((q) => {
+    if (!q) return false;
+    const score = Number(q.totalScore ?? q.score ?? 0);
+    const grade = q.grade || '';
+    return (score > 0 && score < 50) || grade.includes('Không hoàn thành');
+  });
+
+  if (failed.length > 0) {
+    const failedLabels = failed.map(
+      (f) => f.periodLabel || f.periodDisplay || f.period || 'Quý'
+    );
+    return {
+      isCapped: true,
+      failedQuarters: failedLabels,
+      reason: `Có ${failed.length} quý Không hoàn thành nhiệm vụ (< 50 điểm) [${failedLabels.join(', ')}]`,
+    };
+  }
+
+  return { isCapped: false, failedQuarters: [], reason: '' };
+}
+
+/**
+ * Xác định xếp loại Cả Năm có áp dụng điều kiện khống chế loại theo Hướng dẫn 05-HD/TU:
+ *
+ * - Nếu có ÍT NHẤT 01 QUÝ bị xếp loại "Không hoàn thành nhiệm vụ" (< 50 điểm):
+ *   + Khống chế tối đa chỉ được xếp loại "Hoàn thành tốt nhiệm vụ"
+ *   + Không được xếp loại "Hoàn thành xuất sắc nhiệm vụ" cho dù yearlyTotalScore >= 90.
+ *
+ * - Thang điểm Xếp loại Cả Năm:
+ *   + >= 90 điểm: "Hoàn thành xuất sắc nhiệm vụ" (nếu không bị khống chế)
+ *   + 70 - 89.99 điểm: "Hoàn thành tốt nhiệm vụ"
+ *   + 50 - 69.99 điểm: "Hoàn thành nhiệm vụ"
+ *   + < 50 điểm: "Không hoàn thành nhiệm vụ"
+ *
+ * @param {number} yearlyTotalScore - Tổng điểm cả năm (Thang 100: KPI 70đ + Phẩm chất 30đ)
+ * @param {Array<Object>} [quarterlyResults=[]] - Kết quả các quý trong năm để kiểm tra khống chế
+ * @returns {string} Xếp loại kết quả Cả Năm
+ */
+export function determineYearlyGrade(yearlyTotalScore = 0, quarterlyResults = []) {
+  const score = Number(yearlyTotalScore) || 0;
+  const capInfo = checkYearlyGradeCap(quarterlyResults);
+
+  if (score >= 90) {
+    if (capInfo.isCapped) {
+      // Bị khóa loại: Tối đa chỉ được "Hoàn thành tốt nhiệm vụ"
+      return 'Hoàn thành tốt nhiệm vụ';
+    }
+    return 'Hoàn thành xuất sắc nhiệm vụ';
+  }
+  if (score >= 70) {
+    return 'Hoàn thành tốt nhiệm vụ';
+  }
+  if (score >= 50) {
+    return 'Hoàn thành nhiệm vụ';
+  }
+  return 'Không hoàn thành nhiệm vụ';
+}
+

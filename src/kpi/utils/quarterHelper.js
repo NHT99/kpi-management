@@ -127,6 +127,7 @@ export const getFullYearQuarterOptions = (targetDate = new Date()) => {
     isCurrent: false,
     isPast: false,
     isFuture: false,
+    isYear: true,
   };
 
   return {

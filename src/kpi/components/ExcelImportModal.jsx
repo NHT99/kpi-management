@@ -33,7 +33,7 @@ import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded';
 import LayersRoundedIcon from '@mui/icons-material/LayersRounded';
 import * as XLSX from 'xlsx';
 
-import sampleExcelUrl from '../../assets/Danh mục công việc của BTCTU 27.9.2026.xlsx?url';
+// import sampleExcelUrl from '../../assets/Danh mục công việc của BTCTU 27.9.2026.xlsx?url';
 
 /**
  * Thuật toán bóc tách dữ liệu từ file Excel danh mục công việc
@@ -248,23 +248,23 @@ export default function ExcelImportModal({ open, onClose, onImportSuccess }) {
     }
   };
 
-  // Nạp nhanh tệp mẫu có sẵn của BTCTU
-  const handleLoadSampleFile = async () => {
-    setLoading(true);
-    setErrorMsg('');
-    try {
-      const response = await fetch(sampleExcelUrl);
-      const buffer = await response.arrayBuffer();
-      const result = parseExcelTaskData(buffer);
-      setParseResult(result);
-      setFile({ name: 'Danh mục công việc của BTCTU 27.9.2026.xlsx', size: buffer.byteLength });
-    } catch (err) {
-      console.error('Lỗi nạp file mẫu:', err);
-      setErrorMsg('Không thể tải file mẫu hệ thống. Vui lòng chọn tệp từ máy của bạn.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // // Nạp nhanh tệp mẫu có sẵn của BTCTU
+  // const handleLoadSampleFile = async () => {
+  //   setLoading(true);
+  //   setErrorMsg('');
+  //   try {
+  //     const response = await fetch(sampleExcelUrl);
+  //     const buffer = await response.arrayBuffer();
+  //     const result = parseExcelTaskData(buffer);
+  //     setParseResult(result);
+  //     setFile({ name: 'Danh mục công việc của BTCTU 27.9.2026.xlsx', size: buffer.byteLength });
+  //   } catch (err) {
+  //     console.error('Lỗi nạp file mẫu:', err);
+  //     setErrorMsg('Không thể tải file mẫu hệ thống. Vui lòng chọn tệp từ máy của bạn.');
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
 
   // Tải file mẫu về máy
   const handleDownloadTemplate = () => {
@@ -359,7 +359,7 @@ export default function ExcelImportModal({ open, onClose, onImportSuccess }) {
               >
                 Chọn tệp từ máy
               </Button>
-              <Button
+              {/* <Button
                 variant="outlined"
                 color="secondary"
                 startIcon={<FolderZipRoundedIcon />}
@@ -367,7 +367,7 @@ export default function ExcelImportModal({ open, onClose, onImportSuccess }) {
                 sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
               >
                 Nạp nhanh tệp mẫu BTCTU (27.9.2026)
-              </Button>
+              </Button> */}
             </Stack>
           </Box>
         )}

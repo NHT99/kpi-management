@@ -89,6 +89,53 @@ export const MOCK_USERS = [
 ];
 
 /**
+ * Retrieves all active user accounts including MOCK_USERS and dynamic accounts from localStorage
+ */
+export function getAllUsers() {
+  const users = [...MOCK_USERS];
+  try {
+    const rawUsers = localStorage.getItem('kpi_users');
+    if (rawUsers) {
+      const parsed = JSON.parse(rawUsers);
+      parsed.forEach((u) => {
+        if (!users.some((x) => x.id === u.id || x.username === u.username)) {
+          users.push(u);
+        }
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const rawStaffs = localStorage.getItem('kpi_staffs');
+    if (rawStaffs) {
+      const parsedStaffs = JSON.parse(rawStaffs);
+      parsedStaffs.forEach((s) => {
+        if (s.username && !users.some((x) => x.id === s.id || x.username === s.username)) {
+          users.push({
+            id: s.id,
+            name: s.name,
+            username: s.username,
+            title: s.title || 'Chuyên viên',
+            department: s.department || 'Phòng chuyên môn',
+            deptId: s.deptId,
+            email: s.email || `${s.username}@kpi.gov.vn`,
+            role: s.role || ROLES.STAFF,
+            employeeCode: s.employeeCode || '',
+            status: s.status || 'ACTIVE',
+          });
+        }
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  return users;
+}
+
+/**
  * Authenticates an issued account with username or email, and password
  * Supports dynamic accounts issued by Super Admin in localStorage ('kpi_users' & 'kpi_staffs')
  */

@@ -42,11 +42,21 @@ import DocumentGeneratorModal from './DocumentGeneratorModal';
 import { useAuth } from '../../rbac/AuthContext';
 import { ROLES } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { INITIAL_ASSIGNED_TASKS } from '../data/mockKPIData';
+import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/organizationData';
 import { INITIAL_DEPT_STAFF } from '../kpiData';
 import { useToast } from '../hooks/useToast';
-import { calculateTotalKPIScore, determineGrade } from '../utils/scoringEngine';
+import {
+  calculateTotalKPIScore,
+  calculateYearlyKPI,
+  determineGrade,
+  determineYearlyGrade,
+  checkYearlyGradeCap,
+} from '../utils/scoringEngine';
+import {
+  getStaffQuarterlyEvaluations,
+  calculateQuarterlyAverage,
+} from '../utils/yearWorkflowHelper';
 import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import * as XLSX from 'xlsx';
@@ -59,7 +69,7 @@ export default function KPIOverviewView() {
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [vtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
-  const [evaluations] = useLocalStorage('kpi_evaluations', []);
+  const [evaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
   const { showToast, ToastComponent } = useToast();
 
   // RBAC permissions check
@@ -100,38 +110,59 @@ export default function KPIOverviewView() {
 
   // Compute all staff evaluations data
   const allStaffCalculatedData = useMemo(() => {
-    return allAvailableStaffs.map((staff) => {
-      // Find staff tasks
-      const userTasks = assignedTasks.filter(
-        (t) => t.staffId === staff.id || t.staffName === staff.name
-      );
+    const isYear = selectedPeriod.startsWith('YEAR_') || selectedPeriod.includes('Năm');
+    const targetYear = selectedPeriod.startsWith('YEAR_')
+      ? parseInt(selectedPeriod.replace('YEAR_', ''), 10) || 2026
+      : 2026;
 
-      // Part 1: Auto KPI score (Max 70đ)
-      let autoKPIScore = 0;
-      if (userTasks.length > 0) {
-        autoKPIScore = calculateTotalKPIScore(userTasks);
-      } else {
-        const defaultProg = staff.progressAvg || 80;
-        autoKPIScore = Math.min(70, Math.round(defaultProg * 0.7 * 10) / 10);
-      }
+    return allAvailableStaffs.map((staff) => {
+      // Find staff tasks (loại bỏ các nhiệm vụ đang chờ duyệt)
+      const userTasks = assignedTasks
+        .filter((t) => t.staffId === staff.id || t.staffName === staff.name)
+        .filter((t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt')
+        .filter((t) => {
+          if (isYear) {
+            if (t.period) return t.period.endsWith(`_${targetYear}`);
+            if (t.deadline) {
+              const d = new Date(t.deadline);
+              return !isNaN(d.getTime()) && d.getFullYear() === targetYear;
+            }
+            return true;
+          }
+          if (t.period) return t.period === selectedPeriod;
+          if (t.deadline) {
+            const d = new Date(t.deadline);
+            if (!isNaN(d.getTime())) {
+              const q = Math.floor(d.getMonth() / 3) + 1;
+              const y = d.getFullYear();
+              return `Q${q}_${y}` === selectedPeriod;
+            }
+          }
+          return true;
+        });
+
+      // Lấy lịch sử đánh giá 4 quý trong năm để tính điểm TB và kiểm tra khống chế
+      const quarterlyEvals = getStaffQuarterlyEvaluations(
+        evaluations,
+        staff.id,
+        staff.name,
+        targetYear
+      );
+      const { averageScore: quarterlyAvgScore } = calculateQuarterlyAverage(quarterlyEvals);
+      const capInfo = isYear ? checkYearlyGradeCap(quarterlyEvals) : { isCapped: false, reason: '' };
 
       // Check existing evaluation in localStorage
       const existingEval = evaluations.find(
-        (e) => e.staffId === staff.id && e.period === selectedPeriod
+        (e) => (e.staffId === staff.id || e.staffName === staff.name) && e.period === selectedPeriod
       );
 
-      // Part 2: Ethics score (Max 30đ)
-      let ethicsScore = 28;
-      if (existingEval && existingEval.ethicsScore !== undefined) {
-        ethicsScore = Number(existingEval.ethicsScore);
-      }
-      ethicsScore = Math.min(30, Math.max(0, ethicsScore));
+      const isLeader =
+        staff.role === ROLES.DEPT_HEAD ||
+        staff.role === ROLES.DEPT_LEADER ||
+        staff.role === ROLES.BAN_LEADER;
 
-      // Part 3: Total score (Max 100đ)
-      const totalScore = Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10);
-
-      // Part 4: Grade classification
-      const grade = determineGrade(totalScore);
+      const hasQuarterlyEvals = quarterlyEvals.some((q) => q.isEvaluated && q.totalScore > 0);
+      const hasTasks = userTasks.length > 0;
 
       // Department & VTVL info
       const deptObj = departments.find((d) => d.id === staff.deptId);
@@ -139,6 +170,65 @@ export default function KPIOverviewView() {
 
       const vtvlObj = vtvls.find((v) => v.id === staff.vtvlId);
       const vtvlTitle = vtvlObj ? vtvlObj.title : staff.title || 'Chuyên viên';
+
+      // NẾU CÁN BỘ CHƯA CÓ NHIỆM VỤ VÀ CHƯA CÓ ĐÁNH GIÁ (hoặc Cả Năm chưa có quý nào):
+      if (!existingEval && !hasTasks && (!isYear || !hasQuarterlyEvals)) {
+        return {
+          id: staff.id,
+          staffId: staff.id,
+          employeeCode: staff.employeeCode || `CB-${staff.id}`,
+          name: staff.name,
+          deptId: staff.deptId,
+          deptName: deptName,
+          vtvlId: staff.vtvlId,
+          vtvlTitle: vtvlTitle,
+          autoKPIScore: null,
+          ethicsScore: null,
+          totalScore: null,
+          grade: 'Chưa đánh giá',
+          status: 'Chưa đánh giá',
+          tasksCount: 0,
+          quarterlyAvgScore: quarterlyAvgScore > 0 ? quarterlyAvgScore : 0,
+          isCapped: false,
+          capReason: '',
+          quarterlyEvals,
+        };
+      }
+
+      // Part 1: Auto KPI score (Max 70đ)
+      let autoKPIScore = 0;
+      if (existingEval?.autoKPIScore !== undefined) {
+        autoKPIScore = Number(existingEval.autoKPIScore);
+      } else if (isYear) {
+        autoKPIScore = calculateYearlyKPI(userTasks, staff, isLeader).finalKPIScore;
+      } else if (userTasks.length > 0) {
+        autoKPIScore = calculateTotalKPIScore(userTasks, staff, allAvailableStaffs);
+      } else {
+        const defaultProg = staff.progressAvg || 80;
+        autoKPIScore = Math.min(70, Math.round(defaultProg * 0.7 * 10) / 10);
+      }
+
+      // Part 2: Ethics score (Max 30đ)
+      let ethicsScore = 28;
+      if (existingEval && existingEval.ethicsScore !== undefined) {
+        ethicsScore = Number(existingEval.ethicsScore);
+      } else if (existingEval && existingEval.bossEthicsScore !== undefined) {
+        ethicsScore = Number(existingEval.bossEthicsScore);
+      }
+      ethicsScore = Math.min(30, Math.max(0, ethicsScore));
+
+      // Part 3: Total score (Max 100đ)
+      const totalScore = Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10);
+
+      // Part 4: Grade classification (áp dụng khống chế nếu là Cả Năm theo Hướng dẫn 05-HD/TU)
+      let grade = '';
+      if (existingEval?.grade) {
+        grade = existingEval.grade;
+      } else if (isYear) {
+        grade = determineYearlyGrade(totalScore, quarterlyEvals);
+      } else {
+        grade = determineGrade(totalScore);
+      }
 
       return {
         id: staff.id,
@@ -155,6 +245,10 @@ export default function KPIOverviewView() {
         grade: grade,
         status: existingEval?.status || 'Đã đánh giá',
         tasksCount: userTasks.length,
+        quarterlyAvgScore,
+        isCapped: isYear ? capInfo.isCapped : false,
+        capReason: capInfo.reason,
+        quarterlyEvals,
       };
     });
   }, [allAvailableStaffs, assignedTasks, evaluations, selectedPeriod, departments, vtvls]);
@@ -206,19 +300,22 @@ export default function KPIOverviewView() {
 
   // KHỐI 2: Summary Stats Calculations
   const totalStaffCount = filteredStaffList.length;
+  const evaluatedStaffList = filteredStaffList.filter((s) => s.grade !== 'Chưa đánh giá' && s.totalScore !== null);
+  const totalEvaluatedCount = evaluatedStaffList.length;
+
   const countXuatSac = filteredStaffList.filter((s) => s.grade === 'Hoàn thành xuất sắc nhiệm vụ').length;
   const countTot = filteredStaffList.filter((s) => s.grade === 'Hoàn thành tốt nhiệm vụ').length;
   const countHoanThanh = filteredStaffList.filter((s) => s.grade === 'Hoàn thành nhiệm vụ').length;
   const countKhongHT = filteredStaffList.filter((s) => s.grade === 'Không hoàn thành nhiệm vụ').length;
 
-  const pctXuatSac = totalStaffCount > 0 ? ((countXuatSac / totalStaffCount) * 100).toFixed(1) : '0.0';
-  const pctTot = totalStaffCount > 0 ? ((countTot / totalStaffCount) * 100).toFixed(1) : '0.0';
-  const pctHoanThanh = totalStaffCount > 0 ? ((countHoanThanh / totalStaffCount) * 100).toFixed(1) : '0.0';
-  const pctKhongHT = totalStaffCount > 0 ? ((countKhongHT / totalStaffCount) * 100).toFixed(1) : '0.0';
+  const pctXuatSac = totalEvaluatedCount > 0 ? ((countXuatSac / totalEvaluatedCount) * 100).toFixed(1) : '0.0';
+  const pctTot = totalEvaluatedCount > 0 ? ((countTot / totalEvaluatedCount) * 100).toFixed(1) : '0.0';
+  const pctHoanThanh = totalEvaluatedCount > 0 ? ((countHoanThanh / totalEvaluatedCount) * 100).toFixed(1) : '0.0';
+  const pctKhongHT = totalEvaluatedCount > 0 ? ((countKhongHT / totalEvaluatedCount) * 100).toFixed(1) : '0.0';
 
-  // Average Total Score of filtered dataset
-  const avgTotalScore = totalStaffCount > 0
-    ? (filteredStaffList.reduce((sum, s) => sum + s.totalScore, 0) / totalStaffCount).toFixed(1)
+  // Average Total Score of evaluated staff
+  const avgTotalScore = totalEvaluatedCount > 0
+    ? (evaluatedStaffList.reduce((sum, s) => sum + s.totalScore, 0) / totalEvaluatedCount).toFixed(1)
     : '0.0';
 
   // KHỐI 3: Biểu đồ Tròn (Pie Chart data)
@@ -564,141 +661,201 @@ export default function KPIOverviewView() {
       case 'Hoàn thành nhiệm vụ':
         return { color: 'warning', label: 'Hoàn thành', sx: { fontWeight: 700, bgcolor: '#ed6c02', color: '#fff' } };
       case 'Không hoàn thành nhiệm vụ':
-      default:
         return { color: 'error', label: 'Không HT', sx: { fontWeight: 700, bgcolor: '#d32f2f', color: '#fff' } };
+      case 'Chưa đánh giá':
+      default:
+        return { variant: 'outlined', label: 'Chưa đánh giá', sx: { fontWeight: 600, color: 'text.secondary', borderColor: 'divider' } };
     }
   };
 
+  const isYearMode = selectedPeriod.startsWith('YEAR_') || selectedPeriod.includes('Năm');
+
   // DataGrid Columns Definition
-  const columns = [
-    {
-      field: 'name',
-      headerName: 'Họ và tên Cán bộ',
-      flex: 1.4,
-      minWidth: 220,
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.75 }}>
-          <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.85rem', fontWeight: 700 }}>
-            {params.row.name.charAt(0)}
-          </Avatar>
-          <Box>
-            <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-              {params.row.name}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-              {params.row.employeeCode}
+  const columns = useMemo(() => {
+    const cols = [
+      {
+        field: 'name',
+        headerName: 'Họ và tên Cán bộ',
+        flex: 1.4,
+        minWidth: 220,
+        renderCell: (params) => (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 0.75 }}>
+            <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.85rem', fontWeight: 700 }}>
+              {params.row.name.charAt(0)}
+            </Avatar>
+            <Box>
+              <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                {params.row.name}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                {params.row.employeeCode}
+              </Typography>
+            </Box>
+          </Box>
+        ),
+      },
+      {
+        field: 'deptName',
+        headerName: 'Phòng ban',
+        flex: 1.2,
+        minWidth: 180,
+        headerAlign: 'left',
+        align: 'left',
+        renderCell: (params) => (
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
+            <Typography variant="body2" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
+              {params.value}
             </Typography>
           </Box>
-        </Box>
-      ),
-    },
-    {
-      field: 'deptName',
-      headerName: 'Phòng ban',
-      flex: 1.2,
-      minWidth: 180,
-      headerAlign: 'left',
-      align: 'left',
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
-          <Typography variant="body2" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
-            {params.value}
-          </Typography>
-        </Box>
-      ),
-    },
-    {
-      field: 'vtvlTitle',
-      headerName: 'Vị trí việc làm',
-      flex: 1.3,
-      minWidth: 200,
-      headerAlign: 'left',
-      align: 'left',
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
-          <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
-            {params.value}
-          </Typography>
-        </Box>
-      ),
-    },
-    {
-      field: 'autoKPIScore',
-      headerName: 'Điểm KPI',
-      flex: 0.9,
-      minWidth: 150,
-      headerAlign: 'center',
-      align: 'center',
-      renderCell: (params) => (
-        <Tooltip title="Điểm tính tự động từ khối lượng hoàn thành các nhiệm vụ KPI được giao (Max 70đ)" arrow>
-          <Chip
-            label={`${params.value} / 70đ`}
-            size="small"
-            color="primary"
-            variant="outlined"
-            sx={{ fontWeight: 700, minWidth: 80 }}
-          />
-        </Tooltip>
-      ),
-    },
-    {
-      field: 'ethicsScore',
-      headerName: 'Điểm Phẩm chất',
-      flex: 0.9,
-      minWidth: 160,
-      headerAlign: 'center',
-      align: 'center',
-      renderCell: (params) => (
-        <Tooltip title="Điểm Phẩm chất chính trị, đạo đức, lối sống, tác phong lề lối làm việc & kỷ cương (Max 30đ)" arrow>
-          <Chip
-            label={`${params.value} / 30đ`}
-            size="small"
-            color="warning"
-            variant="outlined"
-            sx={{ fontWeight: 700, minWidth: 80 }}
-          />
-        </Tooltip>
-      ),
-    },
-    {
-      field: 'totalScore',
-      headerName: 'Tổng điểm',
-      flex: 0.9,
-      minWidth: 140,
-      headerAlign: 'center',
-      align: 'center',
-      renderCell: (params) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', gap: 0.5 }}>
-          <Typography
-            variant="body2"
-            sx={{
-              fontWeight: 800,
-              fontSize: '0.95rem',
-              color: params.value >= 90 ? 'success.main' : params.value >= 70 ? 'primary.main' : params.value >= 50 ? 'warning.main' : 'error.main',
-              lineHeight: 1,
-            }}
-          >
-            {params.value}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
-            /100
-          </Typography>
-        </Box>
-      ),
-    },
-    {
-      field: 'grade',
-      headerName: 'Xếp loại',
-      flex: 1.1,
-      minWidth: 150,
-      headerAlign: 'center',
-      align: 'center',
-      renderCell: (params) => {
-        const chipProps = getGradeChipProps(params.value);
-        return <Chip size="small" {...chipProps} />;
+        ),
       },
-    },
-  ];
+      {
+        field: 'vtvlTitle',
+        headerName: 'Vị trí việc làm',
+        flex: 1.3,
+        minWidth: 180,
+        headerAlign: 'left',
+        align: 'left',
+        renderCell: (params) => (
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', width: '100%', height: '100%', pl: 0.5 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500, textAlign: 'left', lineHeight: 1.3 }}>
+              {params.value}
+            </Typography>
+          </Box>
+        ),
+      },
+    ];
+
+    if (isYearMode) {
+      cols.push({
+        field: 'quarterlyAvgScore',
+        headerName: 'Điểm TB 4 Quý',
+        flex: 0.85,
+        minWidth: 130,
+        headerAlign: 'center',
+        align: 'center',
+        renderCell: (params) => (
+          <Chip
+            label={params.value > 0 ? `${params.value}đ` : '—'}
+            size="small"
+            variant="outlined"
+            sx={{ fontWeight: 600, bgcolor: 'background.paper' }}
+          />
+        ),
+      });
+    }
+
+    cols.push(
+      {
+        field: 'autoKPIScore',
+        headerName: isYearMode ? 'Điểm KPI Năm' : 'Điểm KPI',
+        flex: 0.9,
+        minWidth: 130,
+        headerAlign: 'center',
+        align: 'center',
+        renderCell: (params) => {
+          if (params.row.grade === 'Chưa đánh giá' || params.value === null) {
+            return <Typography variant="caption" color="text.secondary">—</Typography>;
+          }
+          return (
+            <Tooltip title="Điểm tính tự động từ khối lượng hoàn thành các nhiệm vụ KPI được giao (Max 70đ)" arrow>
+              <Chip
+                label={`${params.value} / 70đ`}
+                size="small"
+                color="primary"
+                variant="outlined"
+                sx={{ fontWeight: 700, minWidth: 80 }}
+              />
+            </Tooltip>
+          );
+        },
+      },
+      {
+        field: 'ethicsScore',
+        headerName: 'Điểm Phẩm chất',
+        flex: 0.9,
+        minWidth: 140,
+        headerAlign: 'center',
+        align: 'center',
+        renderCell: (params) => {
+          if (params.row.grade === 'Chưa đánh giá' || params.value === null) {
+            return <Typography variant="caption" color="text.secondary">—</Typography>;
+          }
+          return (
+            <Tooltip title="Điểm Phẩm chất chính trị, đạo đức, lối sống, tác phong lề lối làm việc & kỷ cương (Max 30đ)" arrow>
+              <Chip
+                label={`${params.value} / 30đ`}
+                size="small"
+                color="warning"
+                variant="outlined"
+                sx={{ fontWeight: 700, minWidth: 80 }}
+              />
+            </Tooltip>
+          );
+        },
+      },
+      {
+        field: 'totalScore',
+        headerName: isYearMode ? 'Điểm Cả Năm' : 'Tổng điểm',
+        flex: 0.9,
+        minWidth: 130,
+        headerAlign: 'center',
+        align: 'center',
+        renderCell: (params) => {
+          if (params.row.grade === 'Chưa đánh giá' || params.value === null) {
+            return <Typography variant="caption" color="text.secondary">—</Typography>;
+          }
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', gap: 0.5 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 800,
+                  fontSize: '0.95rem',
+                  color: params.value >= 90 ? 'success.main' : params.value >= 70 ? 'primary.main' : params.value >= 50 ? 'warning.main' : 'error.main',
+                  lineHeight: 1,
+                }}
+              >
+                {params.value}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+                /100
+              </Typography>
+            </Box>
+          );
+        },
+      },
+      {
+        field: 'grade',
+        headerName: 'Xếp loại',
+        flex: 1.2,
+        minWidth: 160,
+        headerAlign: 'center',
+        align: 'center',
+        renderCell: (params) => {
+          const chipProps = getGradeChipProps(params.value);
+          return (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Chip size="small" {...chipProps} />
+              {params.row.isCapped && (
+                <Tooltip title={params.row.capReason || 'Bị khống chế loại do có quý < 50 điểm (HD 05)'}>
+                  <Chip
+                    label="Khống chế"
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 700 }}
+                  />
+                </Tooltip>
+              )}
+            </Box>
+          );
+        },
+      }
+    );
+
+    return cols;
+  }, [isYearMode]);
 
   return (
     <Box sx={{ width: '100%', pb: 5 }}>
@@ -743,7 +900,9 @@ export default function KPIOverviewView() {
                   boxShadow: '0 2px 8px rgba(25, 118, 210, 0.25)',
                 }}
               >
-                Xuất Quyết định Xếp loại
+                {selectedPeriod.startsWith('YEAR_')
+                  ? 'Xuất Quyết định Xếp loại Cả Năm'
+                  : 'Xuất Quyết định Xếp loại'}
               </Button>
               <Button
                 variant="outlined"

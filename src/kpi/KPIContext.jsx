@@ -5,6 +5,8 @@ import {
   INITIAL_DEPT_STAFF,
   INITIAL_DEPT_SUMMARIES,
 } from './kpiData';
+import { useLocalStorage } from './hooks/useLocalStorage';
+import { INITIAL_AGENCY_APPROVALS } from './data/mockKPIData';
 
 const KPIContext = createContext(null);
 
@@ -12,13 +14,18 @@ export function KPIProvider({ children }) {
   const [personalKPIs, setPersonalKPIs] = useState(INITIAL_PERSONAL_KPIS);
   const [deptStaff, setDeptStaff] = useState(INITIAL_DEPT_STAFF);
   const [deptSummaries, setDeptSummaries] = useState(INITIAL_DEPT_SUMMARIES);
-  const [agencyApproval, setAgencyApproval] = useState({
+  const [agencyApprovals, setAgencyApprovals] = useLocalStorage(
+    'kpi_agency_approval',
+    INITIAL_AGENCY_APPROVALS
+  );
+
+  const agencyApproval = agencyApprovals['Q3_2026'] || {
     isApproved: false,
     decisionNumber: '128/QĐ-BQL',
     approvalDate: null,
     councilNote: 'Hội đồng đánh giá thống nhất biểu quyết 100% công nhận kết quả thẩm định.',
     signer: 'Lê Hoàng Long - Phó Giám đốc Ban',
-  });
+  };
 
   // Action for Cán bộ / Chuyên viên: Cập nhật tiến độ KPI cá nhân
   const updateKPIProgress = (kpiId, data) => {
@@ -96,15 +103,18 @@ export function KPIProvider({ children }) {
 
   // Action for Lãnh đạo Ban / Hội đồng: Thẩm định & Phê duyệt kết quả toàn cơ quan
   const approveAgencyResults = ({ decisionNumber, councilNote }) => {
-    setAgencyApproval({
-      isApproved: true,
-      decisionNumber: decisionNumber || '128/QĐ-BQL',
-      approvalDate: new Date().toLocaleDateString('vi-VN'),
-      councilNote:
-        councilNote ||
-        'Hội đồng đánh giá thống nhất biểu quyết 100% công nhận kết quả thẩm định.',
-      signer: 'Lê Hoàng Long - Phó Giám đốc Ban',
-    });
+    setAgencyApprovals((prev) => ({
+      ...prev,
+      Q3_2026: {
+        isApproved: true,
+        decisionNumber: decisionNumber || '128/QĐ-BQL',
+        approvalDate: new Date().toLocaleDateString('vi-VN'),
+        councilNote:
+          councilNote ||
+          'Hội đồng đánh giá thống nhất biểu quyết 100% công nhận kết quả thẩm định.',
+        signer: 'Lê Hoàng Long - Phó Giám đốc Ban',
+      },
+    }));
 
     // Update all departments to APPROVED
     setDeptSummaries((prev) =>

@@ -43,13 +43,14 @@ import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
 import { ROLES } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { INITIAL_ASSIGNED_TASKS } from '../data/mockKPIData';
+import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS } from '../data/organizationData';
 import { INITIAL_DEPT_STAFF } from '../kpiData';
 import { useToast } from '../hooks/useToast';
-import { calculateTotalKPIScore, determineGrade } from '../utils/scoringEngine';
+import { calculateTotalKPIScore, calculateYearlyKPI, determineGrade, determineYearlyGrade, checkYearlyGradeCap } from '../utils/scoringEngine';
 import { logAction } from '../utils/auditLogger';
 import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { getStaffQuarterlyEvaluations } from '../utils/yearWorkflowHelper';
 
 const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
 
@@ -58,7 +59,7 @@ export default function DepartmentEvaluationView() {
   const [assignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
-  const [evaluations, setEvaluations] = useLocalStorage('kpi_evaluations', []);
+  const [evaluations, setEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
   const { showToast, ToastComponent } = useToast();
 
   // Mặc định hiển thị Quý hiện tại của năm hiện tại
@@ -150,20 +151,42 @@ export default function DepartmentEvaluationView() {
     return list;
   }, [allAvailableStaffs, role, currentUser, searchTerm]);
 
+  const isYearPeriod = selectedPeriod.startsWith('YEAR_') || selectedPeriod.includes('Năm');
+
   // Compute evaluation rows
   const rows = useMemo(() => {
     return targetStaffList.map((staff) => {
-      const userTasks = assignedTasks.filter((t) => t.staffId === staff.id || t.staffName === staff.name);
-      const autoKPIScore = calculateTotalKPIScore(userTasks, staff, allAvailableStaffs);
+      // Chỉ lấy các nhiệm vụ không chờ duyệt
+      const userTasks = assignedTasks
+        .filter((t) => t.staffId === staff.id || t.staffName === staff.name)
+        .filter((t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt');
 
       // Find staff self-evaluation record
-      const existingEval = evaluations.find((e) => e.staffId === staff.id && e.period === selectedPeriod);
-      const selfEthicsScore = existingEval ? existingEval.ethicsScore : 25;
-      const bossEthicsScore = bossEthicsInputs[staff.id] !== undefined ? bossEthicsInputs[staff.id] : (existingEval?.bossEthicsScore ?? 27);
+      const existingEval = evaluations.find(
+        (e) => (e.staffId === staff.id || e.staffName === staff.name) && e.period === selectedPeriod
+      );
+      const autoKPIScore = existingEval?.autoKPIScore !== undefined
+        ? Number(existingEval.autoKPIScore)
+        : isYearPeriod
+        ? calculateYearlyKPI(userTasks, staff, staff.role === ROLES.DEPT_HEAD || staff.role === ROLES.DEPT_LEADER).finalKPIScore
+        : calculateTotalKPIScore(userTasks, staff, allAvailableStaffs);
+
+      const selfEthicsScore = existingEval ? Number(existingEval.ethicsScore ?? 25) : 25;
+      // Sếp chấm: Nếu sếp đã gõ tay trong bossEthicsInputs thì lấy điểm đó,
+      // nếu chưa gõ và đã có bossEthicsScore lưu trong existingEval thì lấy bossEthicsScore,
+      // nếu chưa có thì mặc định lấy đúng điểm tự chấm của cán bộ (selfEthicsScore)!
+      const bossEthicsScore = bossEthicsInputs[staff.id] !== undefined
+        ? Number(bossEthicsInputs[staff.id])
+        : (existingEval?.bossEthicsScore !== undefined ? Number(existingEval.bossEthicsScore) : selfEthicsScore);
+
       const isApproved = existingEval?.status === 'APPROVED';
 
-      const totalScore = Math.min(100, Math.round((autoKPIScore + Number(bossEthicsScore)) * 10) / 10);
-      const grade = determineGrade(totalScore);
+      const totalScore = Math.min(100, Math.round((Number(autoKPIScore) + Number(bossEthicsScore)) * 10) / 10);
+
+      // Lấy kết quả các quý và kiểm tra khống chế loại Cả Năm
+      const quarterlyResults = getStaffQuarterlyEvaluations(evaluations, staff.id, staff.name, currentQuarterInfo.year);
+      const capInfo = isYearPeriod ? checkYearlyGradeCap(quarterlyResults) : { isCapped: false, reason: '' };
+      const grade = isYearPeriod ? determineYearlyGrade(totalScore, quarterlyResults) : determineGrade(totalScore);
 
       return {
         id: staff.id,
@@ -178,9 +201,12 @@ export default function DepartmentEvaluationView() {
         grade,
         isApproved,
         evalRecord: existingEval,
+        quarterlyResults,
+        isCapped: capInfo.isCapped,
+        capReason: capInfo.reason,
       };
     });
-  }, [targetStaffList, assignedTasks, allAvailableStaffs, evaluations, selectedPeriod, bossEthicsInputs]);
+  }, [targetStaffList, assignedTasks, allAvailableStaffs, evaluations, selectedPeriod, bossEthicsInputs, isYearPeriod, currentQuarterInfo.year]);
 
   // Handle Boss Ethics Score Input Change
   const handleBossEthicsChange = (staffId, val) => {
@@ -192,7 +218,7 @@ export default function DepartmentEvaluationView() {
   const handleApproveStaff = (row) => {
     const bossScore = row.bossEthicsScore;
     const finalTotal = Math.min(100, Math.round((row.autoKPIScore + bossScore) * 10) / 10);
-    const finalGrade = determineGrade(finalTotal);
+    const finalGrade = isYearPeriod ? determineYearlyGrade(finalTotal, row.quarterlyResults) : determineGrade(finalTotal);
 
     const updatedRecord = {
       staffId: row.id,
@@ -209,7 +235,7 @@ export default function DepartmentEvaluationView() {
     };
 
     setEvaluations((prev) => {
-      const filtered = prev.filter((e) => !(e.staffId === row.id && e.period === selectedPeriod));
+      const filtered = (prev || []).filter((e) => !((e.staffId === row.id || e.staffName === row.name) && e.period === selectedPeriod));
       return [...filtered, updatedRecord];
     });
 
@@ -249,9 +275,9 @@ export default function DepartmentEvaluationView() {
 
   // Kiểm tra nếu quý chưa diễn ra hoặc chưa có dữ liệu đánh giá:
   const hasPeriodData = useMemo(() => {
-    if (selectedPeriod === 'Q3_2026' || selectedPeriod === 'YEAR_2026') return true;
+    if (selectedPeriod === currentQuarterInfo.periodKey || selectedPeriod === 'Q3_2026' || selectedPeriod === 'YEAR_2026') return true;
     return evaluations.some((e) => e.period === selectedPeriod);
-  }, [selectedPeriod, evaluations]);
+  }, [selectedPeriod, evaluations, currentQuarterInfo]);
 
   return (
     <Box sx={{ width: '100%', pb: 5 }}>
@@ -393,6 +419,17 @@ export default function DepartmentEvaluationView() {
                           color={row.grade.includes('Xuất sắc') ? 'success' : row.grade.includes('tốt') ? 'primary' : 'warning'}
                           sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700, mt: 0.5 }}
                         />
+                        {isYearPeriod && row.isCapped && (
+                          <Tooltip title={row.capReason || 'Khống chế xếp loại theo Hướng dẫn 05-HD/TU'}>
+                            <Chip
+                              label="Bị khống chế loại"
+                              size="small"
+                              color="warning"
+                              variant="outlined"
+                              sx={{ height: 18, fontSize: '0.62rem', fontWeight: 700, mt: 0.5, ml: 0.5 }}
+                            />
+                          </Tooltip>
+                        )}
                       </Box>
                     </TableCell>
                     <TableCell align="right">

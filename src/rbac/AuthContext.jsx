@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import { ROLES, ROLE_DETAILS } from './roles';
 import { ROLE_PERMISSIONS } from './permissions';
-import { MOCK_USERS, authenticateUser } from './users';
+import { MOCK_USERS, authenticateUser, getAllUsers } from './users';
 
 const AuthContext = createContext(null);
 const STORAGE_KEY = 'kpi_auth_user';
@@ -14,7 +14,8 @@ export function AuthProvider({ children }) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        const exists = MOCK_USERS.find((u) => u.id === parsed.id);
+        const all = getAllUsers();
+        const exists = all.find((u) => u.id === parsed.id) || MOCK_USERS.find((u) => u.id === parsed.id);
         return exists || parsed;
       }
     } catch {
@@ -53,7 +54,8 @@ export function AuthProvider({ children }) {
   };
 
   const switchUser = (userId) => {
-    const found = MOCK_USERS.find((u) => u.id === userId);
+    const all = getAllUsers();
+    const found = all.find((u) => u.id === userId) || MOCK_USERS.find((u) => u.id === userId);
     if (found) {
       setCurrentUser(found);
       try {
@@ -98,7 +100,7 @@ export function AuthProvider({ children }) {
     role,
     roleDetails,
     permissions,
-    users: MOCK_USERS,
+    users: getAllUsers(),
     login,
     logout,
     switchUser,
