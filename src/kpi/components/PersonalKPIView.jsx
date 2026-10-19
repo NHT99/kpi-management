@@ -44,6 +44,8 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import SpeedRoundedIcon from '@mui/icons-material/SpeedRounded';
 import RuleRoundedIcon from '@mui/icons-material/RuleRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 
 import { useKPI } from '../KPIContext';
 import { useAuth } from '../../rbac/AuthContext';
@@ -129,6 +131,7 @@ export default function PersonalKPIView() {
   const selectedPeriodDisplay = selectedPeriodObj.display;
   const isPastQuarter = Boolean(selectedPeriodObj.isPast);
   const isYear = Boolean(selectedPeriodObj.isYear);
+  const isQ4 = !isQuarterEligibleForSeparateDecision(selectedPeriod);
 
   // Trục D: Đánh giá Năng lực Lãnh đạo (Chỉ áp dụng cho DEPT_LEADER & BAN_LEADER)
   const [d2Score, setD2Score] = useState(100); // D2 (Triển khai): 100% hoặc 50%
@@ -356,15 +359,15 @@ export default function PersonalKPIView() {
 
     const calculated = isYear
       ? calculateYearlyKPI(
-          userAssignedTasks,
-          { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
-          isLeader
-        )
+        userAssignedTasks,
+        { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
+        isLeader
+      )
       : calculateQuarterlyKPI(
-          userAssignedTasks,
-          { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
-          isLeader
-        );
+        userAssignedTasks,
+        { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
+        isLeader
+      );
 
     // Nếu đã có bản đánh giá chính thức được phê duyệt, ưu tiên số liệu chính thức từ hồ sơ
     if (currentPeriodEval?.kpiBreakdown) {
@@ -525,15 +528,15 @@ export default function PersonalKPIView() {
     // 1. Chốt điểm KPI chính thức của Quý hoặc Năm (Max 70đ) theo chuẩn 4 trục
     const finalCalculated = isYear
       ? calculateYearlyKPI(
-          userAssignedTasks,
-          { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
-          isLeader
-        )
+        userAssignedTasks,
+        { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
+        isLeader
+      )
       : calculateQuarterlyKPI(
-          userAssignedTasks,
-          { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
-          isLeader
-        );
+        userAssignedTasks,
+        { d1: autoD1, d2: d2Score, d3: d3Score, subordinates },
+        isLeader
+      );
     const finalOfficialKPIScore = finalCalculated.finalKPIScore;
 
     // 2. Điểm Phẩm chất đạo đức (Max 30đ)
@@ -727,27 +730,86 @@ export default function PersonalKPIView() {
               >
                 {role === ROLES.BAN_LEADER ? 'Tự tạo KPI cá nhân' : 'Đề xuất nhiệm vụ mới'}
               </Button>
-              <Button
-                variant="contained"
-                color={hasNoTasks ? 'inherit' : isEffectivelyApproved ? 'success' : isSubmitted ? 'info' : 'secondary'}
-                size="small"
-                disabled={hasNoTasks}
-                startIcon={hasNoTasks ? null : isEffectivelyApproved ? <CheckCircleRoundedIcon /> : <SendRoundedIcon />}
-                onClick={handleOpenSelfEvalModal}
-                sx={{
-                  textTransform: 'none',
-                  fontWeight: 700,
-                  borderRadius: 1.5,
-                  color: hasNoTasks ? 'text.secondary' : '#fff',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {dynamicSubmitButtonLabel}
-              </Button>
+              {isQ4 ? (
+                <Tooltip
+                  title="Theo Hướng dẫn 05-HD/TU: Quý IV không gửi bản đánh giá riêng biệt mà tích lũy vào Cả Năm. Nhấn để chuyển sang đợt Đánh giá Cả Năm."
+                  arrow
+                >
+                  <span>
+                    <Button
+                      variant="outlined"
+                      color="info"
+                      size="small"
+                      startIcon={<AutoStoriesRoundedIcon />}
+                      onClick={() => setSelectedPeriod(yearOption.value)}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 700,
+                        borderRadius: 1.5,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Chuyển sang Đánh giá Cả Năm
+                    </Button>
+                  </span>
+                </Tooltip>
+              ) : (
+                <Button
+                  variant="contained"
+                  color={hasNoTasks ? 'inherit' : isEffectivelyApproved ? 'success' : isSubmitted ? 'info' : 'secondary'}
+                  size="small"
+                  disabled={hasNoTasks}
+                  startIcon={hasNoTasks ? null : isEffectivelyApproved ? <CheckCircleRoundedIcon /> : <SendRoundedIcon />}
+                  onClick={handleOpenSelfEvalModal}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    borderRadius: 1.5,
+                    color: hasNoTasks ? 'text.secondary' : '#fff',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {dynamicSubmitButtonLabel}
+                </Button>
+              )}
             </Box>
           </Box>
         </CardContent>
       </Card>
+
+      {/* Thông báo quy định nghiệp vụ Quý IV (Hướng dẫn 05-HD/TU) */}
+      {isQ4 && (
+        <Alert
+          severity="info"
+          variant="outlined"
+          icon={<InfoOutlinedIcon />}
+          sx={{
+            mb: 3,
+            borderRadius: 2,
+            bgcolor: (theme) =>
+              theme.palette.mode === 'dark' ? 'rgba(2, 136, 209, 0.08)' : '#e1f5fe',
+            borderColor: 'info.main',
+          }}
+          action={
+            <Button
+              color="info"
+              size="small"
+              variant="contained"
+              onClick={() => setSelectedPeriod(yearOption.value)}
+              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1.5, mr: 1, whiteSpace: 'nowrap' }}
+            >
+              Chuyển sang Cả Năm 2026
+            </Button>
+          }
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+            Quy định nghiệp vụ Hướng dẫn 05-HD/TU (Ban Tổ chức Tỉnh ủy):
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            Quý IV không ban hành Quyết định xếp loại riêng biệt. Toàn bộ tiến độ và khối lượng công việc Quý IV được tích lũy trực tiếp vào đợt <strong>Tổng kết Đánh giá Cả Năm</strong>.
+          </Typography>
+        </Alert>
+      )}
 
       {/* Cảnh báo khống chế xếp loại Cả Năm nếu có quý < 50 điểm (Hướng dẫn 05-HD/TU) */}
       {isYear && yearlyCapInfo.isCapped && (
@@ -765,18 +827,6 @@ export default function PersonalKPIView() {
         </Alert>
       )}
 
-      {/* Thông báo quy trình Quý IV (không ra quyết định riêng, tích lũy vào Cả Năm) */}
-      {selectedPeriod.startsWith('Q4') && (
-        <Alert
-          severity="info"
-          variant="outlined"
-          sx={{ mb: 3, borderRadius: 2, bgcolor: '#f0f9ff', borderColor: '#bae6fd' }}
-        >
-          <Typography variant="body2" sx={{ color: '#0369a1' }}>
-            <strong>Quy định Quý IV (Hướng dẫn 05-HD/TU):</strong> Quý IV không ban hành Quyết định xếp loại riêng biệt, toàn bộ số liệu công việc và tiến độ Quý IV được tích lũy trực tiếp vào đợt <strong>Tổng kết Đánh giá Cả Năm</strong>.
-          </Typography>
-        </Alert>
-      )}
 
       {/* Summary Block: Auto KPI Score (Max 70đ) & 4 Trục A, B, C, D */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -800,8 +850,8 @@ export default function PersonalKPIView() {
                   {hasNoTasks
                     ? `Điểm KPI (${selectedPeriodDisplay})`
                     : isEffectivelyApproved
-                    ? `Điểm KPI Chính thức (${selectedPeriodDisplay})`
-                    : 'Điểm KPI Tạm tính (Max 70đ)'}
+                      ? `Điểm KPI Chính thức (${selectedPeriodDisplay})`
+                      : 'Điểm KPI Tạm tính (Max 70đ)'}
                 </Typography>
               </Stack>
 
@@ -943,6 +993,13 @@ export default function PersonalKPIView() {
                     color="info"
                     sx={{ fontWeight: 700 }}
                   />
+                ) : isQ4 ? (
+                  <Chip
+                    label="Tích lũy vào Cả Năm (HD 05)"
+                    color="primary"
+                    variant="outlined"
+                    sx={{ fontWeight: 700 }}
+                  />
                 ) : (
                   <Chip
                     label={isYear ? 'Điểm Tạm tính trong Năm' : 'Điểm Tạm tính trong Quý'}
@@ -958,6 +1015,8 @@ export default function PersonalKPIView() {
                   <>
                     Kết quả chính thức: <strong>{currentPeriodEval?.totalScore ?? 0}/100đ</strong> ({currentPeriodEval?.grade ?? 'Đạt'}). Bấm nút phía trên để xem chi tiết bản đánh giá.
                   </>
+                ) : isQ4 ? (
+                  'Theo Hướng dẫn 05-HD/TU: Số liệu Quý IV tích lũy vào đợt Tổng kết Cả Năm. Chuyển sang kỳ Cả Năm để gửi bản tự đánh giá.'
                 ) : (
                   <>
                     Bấm <strong>&quot;Gửi đánh giá {isYear ? 'Năm' : 'Quý'}&quot;</strong> để chốt điểm chính thức 4 trục (Max 70đ) và tự chấm 30đ Phẩm chất đạo đức.
