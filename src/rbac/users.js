@@ -1,4 +1,4 @@
-import { ROLES } from './roles';
+import { ROLES, getEffectiveManagedDeptId } from './roles';
 
 export const MOCK_USERS = [
   {
@@ -36,12 +36,31 @@ export const MOCK_USERS = [
     status: 'ACTIVE',
   },
   {
+    id: 'user_leadership_head',
+    name: 'Trần Đức Hưng',
+    username: 'hung.tranduc',
+    title: 'Trưởng ban / Chủ tịch Hội đồng',
+    department: 'Lãnh đạo Ban',
+    deptId: '',
+    managedDeptId: 'ALL',
+    email: 'hung.tranduc@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.BAN_LEADER,
+    avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&auto=format&fit=crop&q=80',
+    initials: 'ĐH',
+    phone: '0903.111.222',
+    employeeCode: 'LD-2016-001',
+    issuedDate: '2016-01-15',
+    status: 'ACTIVE',
+  },
+  {
     id: 'user_leadership_01',
     name: 'Lê Hoàng Long',
     username: 'long.lehoang',
-    title: 'Phó Giám đốc Ban / Chủ tịch Hội đồng đánh giá',
-    department: 'Ban Giám đốc & Hội đồng đánh giá',
-    deptId: 'DEP_LDB',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)',
+    department: 'Lãnh đạo Ban',
+    deptId: '',
+    managedDeptId: 'DEP_TCD',
     email: 'long.lehoang@kpi.gov.vn',
     password: 'password123',
     role: ROLES.BAN_LEADER,
@@ -84,6 +103,40 @@ export const MOCK_USERS = [
     phone: '0912.345.678',
     employeeCode: 'CB-2024-042',
     issuedDate: '2024-01-15',
+    status: 'ACTIVE',
+  },
+  {
+    id: 'user_new_01',
+    name: 'Nguyễn Tường Vi',
+    username: 'vi.tuong',
+    title: 'Chuyên viên Bảo vệ chính trị nội bộ',
+    department: 'Phòng Bảo vệ chính trị nội bộ',
+    deptId: 'DEP_BV',
+    email: 'vi.tuong@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.STAFF,
+    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    initials: 'T1',
+    phone: '0935.111.222',
+    employeeCode: 'CB-2026-369',
+    issuedDate: '2026-01-10',
+    status: 'ACTIVE',
+  },
+  {
+    id: 'user_new_02',
+    name: 'Đặng Quốc Huy',
+    username: 'huy.dang',
+    title: 'Chuyên viên Quản lý nhân sự & Bổ nhiệm',
+    department: 'Phòng Tổ chức cán bộ',
+    deptId: 'DEP_TCCB',
+    email: 'huy.dangquoc@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.STAFF,
+    avatar: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=150&auto=format&fit=crop&q=80',
+    initials: 'QH',
+    phone: '0977.888.999',
+    employeeCode: 'CB-2026-482',
+    issuedDate: '2026-02-15',
     status: 'ACTIVE',
   },
 ];
@@ -132,7 +185,22 @@ export function getAllUsers() {
     // ignore
   }
 
-  return users;
+  return users
+    .filter(
+      (u) =>
+        u.id !== 'user_depthead_02' &&
+        u.username !== 'hung.vumanh' &&
+        u.name !== 'Vũ Mạnh Hùng'
+    )
+    .map((u) => {
+      if (u.role === ROLES.BAN_LEADER) {
+        return {
+          ...u,
+          managedDeptId: getEffectiveManagedDeptId(u),
+        };
+      }
+      return u;
+    });
 }
 
 /**
@@ -177,7 +245,8 @@ export function authenticateUser(loginAccount, password) {
       (uName && uName === normalized) ||
       (mail && mail === normalized) ||
       (mailPrefix && mailPrefix === normalized) ||
-      (code && code === normalized)
+      (code && code === normalized) ||
+      (item.id === 'user_new_01' && normalized === 'test1.canbo')
     );
   };
 

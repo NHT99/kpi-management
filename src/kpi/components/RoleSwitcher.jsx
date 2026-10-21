@@ -13,7 +13,7 @@ import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import { useAuth } from '../../rbac/AuthContext';
-import { ROLE_DETAILS } from '../../rbac/roles';
+import { ROLE_DETAILS, getUserRoleBadge } from '../../rbac/roles';
 
 export default function RoleSwitcher() {
   const { currentUser, roleDetails, users, switchUser } = useAuth();
@@ -33,13 +33,15 @@ export default function RoleSwitcher() {
     handleClose();
   };
 
+  const currentBadge = getUserRoleBadge(currentUser);
+
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
       <Button
         onClick={handleClick}
         variant="outlined"
         size="small"
-        startIcon={<SecurityRoundedIcon color={roleDetails.color} />}
+        startIcon={<SecurityRoundedIcon color={currentBadge.color} />}
         endIcon={<SwapHorizRoundedIcon />}
         sx={{
           borderRadius: 2,
@@ -61,12 +63,12 @@ export default function RoleSwitcher() {
             Chuyển vai trò RBAC:
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary', lineHeight: 1.2 }}>
-            {roleDetails.shortName}
+            {currentBadge.label}
           </Typography>
         </Box>
         <Chip
-          label={roleDetails.shortName}
-          color={roleDetails.color}
+          label={currentBadge.label}
+          color={currentBadge.color}
           size="small"
           sx={{ height: 20, fontSize: '0.7rem', fontWeight: 600 }}
         />
@@ -91,9 +93,6 @@ export default function RoleSwitcher() {
           <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary' }}>
             Chọn vai trò thử nghiệm RBAC
           </Typography>
-          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-            Hệ thống sẽ cập nhật quyền hạn và giao diện tức thì
-          </Typography>
         </Box>
 
         {users.map((user) => {
@@ -116,9 +115,9 @@ export default function RoleSwitcher() {
                 borderColor: isSelected ? `${uRoleDetails.color}.main` : 'transparent',
                 bgcolor: isSelected
                   ? (theme) =>
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255,255,255,0.05)'
-                        : 'rgba(0,0,0,0.03)'
+                    theme.palette.mode === 'dark'
+                      ? 'rgba(255,255,255,0.05)'
+                      : 'rgba(0,0,0,0.03)'
                   : 'inherit',
               }}
             >
@@ -150,12 +149,17 @@ export default function RoleSwitcher() {
                     <Typography variant="body2" sx={{ fontWeight: 700 }}>
                       {user.name}
                     </Typography>
-                    <Chip
-                      label={uRoleDetails.shortName}
-                      color={uRoleDetails.color}
-                      size="small"
-                      sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
-                    />
+                    {(() => {
+                      const userBadge = getUserRoleBadge(user);
+                      return (
+                        <Chip
+                          label={userBadge.label}
+                          color={userBadge.color}
+                          size="small"
+                          sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
+                        />
+                      );
+                    })()}
                   </Box>
                 }
                 secondary={
@@ -166,19 +170,6 @@ export default function RoleSwitcher() {
                       sx={{ display: 'block', color: 'text.secondary', fontWeight: 500 }}
                     >
                       {user.title} • {user.department}
-                    </Typography>
-                    <Typography
-                      component="span"
-                      variant="caption"
-                      sx={{
-                        display: 'block',
-                        mt: 0.5,
-                        fontStyle: 'italic',
-                        color: 'primary.main',
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      Quyền: {uRoleDetails.description}
                     </Typography>
                   </Box>
                 }

@@ -21,18 +21,19 @@ import ManageAccountsRoundedIcon from '@mui/icons-material/ManageAccountsRounded
 
 import { useNavigation, NAV_TABS } from '../../kpi/NavigationContext';
 import { useAuth } from '../../rbac/AuthContext';
-import { ROLES } from '../../rbac/roles';
+import { ROLES, isDeputyDeptHead, isTrueDeptHead } from '../../rbac/roles';
 import { PERMISSIONS } from '../../rbac/permissions';
 
 export default function MenuContent({ collapsed = false }) {
   const { activeTab, setActiveTab } = useNavigation();
-  const { role, hasPermission } = useAuth();
+  const { role, hasPermission, currentUser } = useAuth();
+  const isDeputy = isDeputyDeptHead(currentUser);
 
   // Navigation items structured by RBAC capability
   const items = [];
 
-  // 1. Dashboard (Tổng quan kết quả tập thể) - Không hiển thị cho SUPER_ADMIN và STAFF
-  if (role !== ROLES.SUPER_ADMIN && role !== ROLES.STAFF) {
+  // 1. Dashboard (Tổng quan kết quả tập thể) - Không hiển thị cho SUPER_ADMIN, STAFF và HR_ADMIN
+  if (role !== ROLES.SUPER_ADMIN && role !== ROLES.STAFF && role !== ROLES.HR_ADMIN) {
     items.push({
       id: NAV_TABS.OVERVIEW,
       text: 'Tổng quan kết quả tập thể',
@@ -68,18 +69,26 @@ export default function MenuContent({ collapsed = false }) {
   if (hasPermission(PERMISSIONS.KPI_PERSONAL_VIEW)) {
     items.push({
       id: NAV_TABS.PERSONAL,
-      text: role === ROLES.DEPT_HEAD ? 'KPI Cá nhân (Trưởng phòng)' : 'KPI & Tiến độ cá nhân',
+      text: isTrueDeptHead(currentUser) ? 'KPI Cá nhân (Trưởng phòng)' : 'KPI & Tiến độ cá nhân',
       subtext: 'Cập nhật tiến độ & tự đánh giá',
       icon: <AssignmentRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'info',
     });
   }
 
-  // 5. Department evaluation item - Không hiển thị cho HR_ADMIN và SUPER_ADMIN
-  if (role !== ROLES.HR_ADMIN && role !== ROLES.SUPER_ADMIN && hasPermission(PERMISSIONS.KPI_DEPT_VIEW_SUMMARY)) {
+  // 5. Department evaluation item - Tuyệt đối không hiển thị cho Phó phòng, HR_ADMIN, SUPER_ADMIN và Chuyên viên
+  // Chỉ dành riêng cho Trưởng phòng thực thụ (isTrueDeptHead) và Lãnh đạo Ban (BAN_LEADER)
+  if (
+    !isDeputy &&
+    role !== ROLES.HR_ADMIN &&
+    role !== ROLES.SUPER_ADMIN &&
+    role !== ROLES.STAFF &&
+    (isTrueDeptHead(currentUser) || role === ROLES.BAN_LEADER) &&
+    hasPermission(PERMISSIONS.KPI_DEPT_VIEW_SUMMARY)
+  ) {
     items.push({
       id: NAV_TABS.DEPARTMENT,
-      text: 'Đánh giá KPI Cấp phòng',
+      text: role === ROLES.BAN_LEADER ? 'Thẩm định Trưởng phòng' : 'Đánh giá KPI Cấp phòng',
       subtext: 'Chấm điểm công chức & xem tổng hợp',
       icon: <SupervisorAccountRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'warning',

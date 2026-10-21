@@ -5,6 +5,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
+import Autocomplete from '@mui/material/Autocomplete';
 import MenuItem from '@mui/material/MenuItem';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -29,6 +30,7 @@ import Tooltip from '@mui/material/Tooltip';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
+import DeleteForeverRoundedIcon from '@mui/icons-material/DeleteForeverRounded';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
@@ -38,18 +40,25 @@ import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { INITIAL_OKRS, INITIAL_ASSIGNED_TASKS, INITIAL_MASTER_KPIS } from '../data/mockKPIData';
-import { INITIAL_DEPT_STAFF } from '../kpiData';
+import { useAuth } from '../../rbac/AuthContext';
+import { INITIAL_OKRS, INITIAL_ASSIGNED_TASKS, INITIAL_MASTER_KPIS, KPI_DATA_VERSION } from '../data/mockKPIData';
 import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
-import { useAuth } from '../../rbac/AuthContext';
-import { ROLES } from '../../rbac/roles';
+import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared } from '../../rbac/roles';
 import { MOCK_USERS } from '../../rbac/users';
 import { logAction } from '../utils/auditLogger';
-import { getCurrentQuarterInfo, getActiveAndRemainingQuarters } from '../utils/quarterHelper';
+import {
+  getCurrentQuarterInfo,
+  getActiveAndRemainingQuarters,
+  toRomanQuarter,
+  isQuarterInPast,
+  getEffectiveOKRStats,
+  normalizePeriodAndQuarter,
+} from '../utils/quarterHelper';
 
 const currentQuarterInfo = getCurrentQuarterInfo();
 const ACTIVE_QUARTER_OPTIONS = getActiveAndRemainingQuarters();
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export default function TaskAndOKRAllocation() {
   const { role, currentUser } = useAuth();
@@ -62,6 +71,33 @@ export default function TaskAndOKRAllocation() {
   const [masterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
   const [storedStaffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
+
+  // Đồng bộ phiên bản init data (đảm bảo chuẩn 8 OKRs, 18 nhiệm vụ, không gán cho Super Admin / HR Admin)
+  useEffect(() => {
+    const savedVer = localStorage.getItem('kpi_data_version');
+    if (savedVer !== KPI_DATA_VERSION) {
+      setOkrs(INITIAL_OKRS);
+      setTasks(INITIAL_ASSIGNED_TASKS);
+      localStorage.setItem('kpi_data_version', KPI_DATA_VERSION);
+    }
+  }, [setOkrs, setTasks]);
+
+  // Tự động đồng bộ tiến độ và trạng thái thực tế của OKRs khi tasks thay đổi
+  useEffect(() => {
+    setOkrs((prevOkrs) => {
+      if (!prevOkrs || !tasks) return prevOkrs;
+      let changed = false;
+      const updated = prevOkrs.map((okr) => {
+        const stats = getEffectiveOKRStats(okr, tasks);
+        if (okr.progress !== stats.progress || okr.status !== stats.status) {
+          changed = true;
+          return { ...okr, progress: stats.progress, status: stats.status };
+        }
+        return okr;
+      });
+      return changed ? updated : prevOkrs;
+    });
+  }, [tasks, setOkrs]);
 
   const { showToast, ToastComponent } = useToast();
 
@@ -78,6 +114,7 @@ export default function TaskAndOKRAllocation() {
         deptId: s.deptId,
         title: s.title || 'Chuyên viên',
         role: s.role || ROLES.STAFF,
+        managedDeptId: s.managedDeptId,
       });
     });
 
@@ -90,19 +127,7 @@ export default function TaskAndOKRAllocation() {
           deptId: u.deptId,
           title: u.title,
           role: u.role,
-        });
-      }
-    });
-
-    INITIAL_DEPT_STAFF.forEach((ds) => {
-      if (!map.has(ds.id)) {
-        map.set(ds.id, {
-          id: ds.id,
-          name: ds.name,
-          department: ds.department || 'Phòng Tổ chức đảng - Đảng viên',
-          deptId: ds.deptId || 'DEP_TCD',
-          title: ds.title || 'Chuyên viên',
-          role: ds.role || ROLES.STAFF,
+          managedDeptId: u.managedDeptId,
         });
       }
     });
@@ -110,18 +135,43 @@ export default function TaskAndOKRAllocation() {
     return Array.from(map.values());
   }, [storedStaffs, departments]);
 
+  const effectiveManagedDept = useMemo(() => {
+    if (!currentUser) return '';
+    return getEffectiveManagedDeptId(currentUser, departments);
+  }, [currentUser, departments]);
+
   const getAvailableSubordinates = () => {
     if (isBanLeader) {
+      if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+        // Phó Trưởng ban: Chỉ giao việc cho Trưởng/Phó phòng thuộc phòng mình phụ trách
+        return allAssignees.filter(
+          (s) =>
+            s.id !== currentUser.id &&
+            (s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER) &&
+            isSameDept(s.deptId || s.department, effectiveManagedDept, departments)
+        );
+      }
+      // Trưởng ban (managedDeptId === 'ALL'): Chỉ giao việc cho các Phó Trưởng ban
       return allAssignees.filter(
-        (s) => s.id !== currentUser.id && (s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER)
+        (s) => s.id !== currentUser.id && s.role === ROLES.BAN_LEADER
       );
     }
     if (isDeptHead) {
+      // Nếu currentUser là Phó phòng: Phó phòng chỉ giao việc cho Chuyên viên trong phòng
+      if (isDeputyDeptHead(currentUser)) {
+        return allAssignees.filter(
+          (s) =>
+            s.id !== currentUser.id &&
+            isSameDept(s.deptId || s.department, currentUser.deptId || currentUser.department, departments) &&
+            s.role === ROLES.STAFF
+        );
+      }
+      // Trưởng phòng / Chánh VP: Có thể giao việc cho cả Chuyên viên (STAFF) và Phó Trưởng phòng / Phó Chánh VP cùng phòng
       return allAssignees.filter(
         (s) =>
           s.id !== currentUser.id &&
-          s.role === ROLES.STAFF &&
-          s.deptId === currentUser.deptId
+          isSameDept(s.deptId || s.department, currentUser.deptId || currentUser.department, departments) &&
+          (s.role === ROLES.STAFF || isDeputyDeptHead(s))
       );
     }
     return [];
@@ -129,13 +179,25 @@ export default function TaskAndOKRAllocation() {
 
   const eligibleSubordinates = getAvailableSubordinates();
 
+  // Delete Confirmation Dialog State (thay thế window.confirm xấu xí)
+  const [deleteConfirmDialog, setDeleteConfirmDialog] = useState({
+    open: false,
+    type: 'TASK', // 'TASK' | 'OKR'
+    item: null,
+    title: '',
+    message: '',
+  });
+
   // OKR Toolbar filters
   const [okrSearch, setOkrSearch] = useState('');
   const [okrStatusFilter, setOkrStatusFilter] = useState('ALL');
 
   // Task Toolbar filters - Filter by Department instead of Staff
   const [taskSearch, setTaskSearch] = useState('');
-  const [taskDeptFilter, setTaskDeptFilter] = useState('ALL');
+  const [taskDeptFilter, setTaskDeptFilter] = useState(() => {
+    if (isDeptHead && currentUser?.deptId) return currentUser.deptId;
+    return 'ALL';
+  });
   const [taskOkrFilter, setTaskOkrFilter] = useState('ALL');
 
   // OKR Dialog State
@@ -159,8 +221,8 @@ export default function TaskAndOKRAllocation() {
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
   const [taskFormData, setTaskFormData] = useState({
     taskName: '',
-    staffId: eligibleSubordinates[0]?.id || 'depthead-01',
-    staffName: eligibleSubordinates[0]?.name || 'Nguyễn Văn Lãnh',
+    staffId: eligibleSubordinates[0]?.id || '',
+    staffName: eligibleSubordinates[0]?.name || '',
     staffDept: eligibleSubordinates[0]?.department || 'Phòng chuyên môn',
     masterCode: '',
     outputProduct: '',
@@ -174,14 +236,12 @@ export default function TaskAndOKRAllocation() {
     currentValue: 0,
   });
 
+
   const getApproverForStaff = (staffId) => {
     const targetStaff = allAssignees.find((s) => s.id === staffId);
-    if (!targetStaff) return 'Lãnh đạo Ban';
-    if (targetStaff.role === ROLES.DEPT_HEAD || targetStaff.role === ROLES.DEPT_LEADER) {
-      return 'Lê Hoàng Long (Lãnh đạo Ban)';
-    }
-    return 'Trưởng phòng chuyên môn phụ trách';
+    return getDirectSupervisorForStaff(targetStaff, currentUser, departments, allAssignees);
   };
+
 
   const currentApprover = getApproverForStaff(taskFormData.staffId);
 
@@ -193,24 +253,63 @@ export default function TaskAndOKRAllocation() {
     if (task.isSelfAssigned === false) {
       return false;
     }
+
+    // 1. Tuyệt đối không cho phép tự duyệt nhiệm vụ của chính mình!
+    if (
+      task.staffId === currentUser?.id ||
+      task.staffName === currentUser?.name ||
+      (task.staffName && currentUser?.name && task.staffName.toLowerCase().trim() === currentUser.name.toLowerCase().trim())
+    ) {
+      return false;
+    }
+
+    // 2. Phó phòng không có thẩm quyền phê duyệt nhiệm vụ cấp phòng (chỉ Trưởng phòng thực thụ duyệt)
+    if (isDeputyDeptHead(currentUser)) {
+      return false;
+    }
+
     const assignee = allAssignees.find((s) => s.id === task.staffId || s.name === task.staffName);
-    const isTaskAssignedToDeptHead =
-      assignee?.role === ROLES.DEPT_HEAD ||
-      assignee?.role === ROLES.DEPT_LEADER ||
-      task.staffId?.includes('depthead') ||
-      task.staffName?.includes('Trưởng phòng');
+    const isTaskAssignedToTrueDeptHead =
+      isTrueDeptHead(assignee) ||
+      task.staffId?.includes('depthead_01') ||
+      (task.staffName?.includes('Trưởng phòng') && !task.staffName?.includes('Phó'));
+
+    const taskDeptId = assignee?.deptId || task.deptId;
+    const taskDeptName = assignee?.department || task.staffDept;
 
     if (isBanLeader) {
-      return isTaskAssignedToDeptHead;
+      if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+        // Phó Trưởng ban: Chỉ phê duyệt nhiệm vụ tự đề xuất của TRƯỞNG PHÒNG thuộc phòng mình phụ trách
+        const isManagedDept =
+          isSameDept(taskDeptId, effectiveManagedDept, departments) ||
+          isSameDept(taskDeptName, effectiveManagedDept, departments);
+        return isTaskAssignedToTrueDeptHead && isManagedDept;
+      }
+      // Trưởng ban (managedDeptId === 'ALL'): Phê duyệt cho Phó Trưởng ban (hoặc Trưởng phòng nếu có)
+      return assignee?.role === ROLES.BAN_LEADER || isTaskAssignedToTrueDeptHead;
     }
+
     if (isDeptHead) {
-      return !isTaskAssignedToDeptHead;
+      // Chỉ Trưởng phòng thực thụ mới được duyệt (không bao gồm Phó phòng)
+      if (!isTrueDeptHead(currentUser)) {
+        return false;
+      }
+      // Trưởng phòng CHỈ ĐƯỢC DUYỆT nhiệm vụ tự đề xuất của Chuyên viên hoặc PHÓ PHÒNG thuộc phòng mình!
+      // Không duyệt nhiệm vụ của chính mình (Trưởng phòng) và không duyệt phòng khác.
+      const isSameDeptMatch = isSameDept(taskDeptId || taskDeptName, currentUser.deptId || currentUser.department, departments);
+      return !isTaskAssignedToTrueDeptHead && Boolean(isSameDeptMatch);
     }
+
     return false;
   };
 
-  // Kiểm tra quyền Sửa/Xóa nhiệm vụ: Nhiệm vụ giao xuống bởi cấp trên thì KHÔNG ĐƯỢC sửa hoặc xóa bởi cấp dưới
+  // Kiểm tra quyền Sửa/Xóa nhiệm vụ: Nhiệm vụ giao xuống bởi cấp trên hoặc thuộc kỳ đã kết thúc thì KHÔNG ĐƯỢC sửa hoặc xóa
   const canEditOrDeleteTask = (task) => {
+    // 0. Nếu nhiệm vụ thuộc kỳ đã kết thúc -> Khóa không cho phép sửa hoặc xóa
+    if (isQuarterInPast(task.quarter || task.period)) {
+      return false;
+    }
+
     // 1. Quản trị hệ thống (SUPER_ADMIN, HR_ADMIN) có toàn quyền quản trị
     if (role === ROLES.SUPER_ADMIN || role === ROLES.HR_ADMIN) return true;
 
@@ -222,21 +321,29 @@ export default function TaskAndOKRAllocation() {
       task.assignedByRole === ROLES.BAN_LEADER ||
       task.approverName?.includes('Lãnh đạo Ban') ||
       task.approverName?.includes('Hội đồng') ||
-      task.approverName?.includes('Lê Hoàng Long') ||
-      task.assignedByName?.includes('Lê Hoàng Long') ||
-      task.type === 'Trọng tâm Lãnh đạo';
+      task.approverName?.includes('Trưởng ban') ||
+      task.type === 'Trọng tâm Lãnh đạo' ||
+      allAssignees.some(
+        (s) =>
+          s.role === ROLES.BAN_LEADER &&
+          (task.assignedByName?.includes(s.name) || task.approverName?.includes(s.name))
+      );
 
-    // 3. Trưởng phòng (DEPT_HEAD):
+    // 3. Trưởng phòng / Phó phòng (DEPT_HEAD):
     if (role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER) {
-      // Nếu nhiệm vụ do Lãnh đạo Ban giao xuống -> Trưởng phòng là cấp dưới -> KHÔNG ĐƯỢC sửa hoặc xóa
+      // Nếu nhiệm vụ do Lãnh đạo Ban giao xuống -> KHÔNG ĐƯỢC sửa hoặc xóa
       if (isAssignedByBanLeader) {
         return false;
       }
-      // Nếu nhiệm vụ này được giao cho chính Trưởng phòng (và không phải tự tạo cá nhân) -> KHÔNG ĐƯỢC sửa hoặc xóa
+      // Nếu là Phó phòng: Phó phòng không được sửa/xóa nhiệm vụ do Trưởng phòng giao xuống
+      if (isDeputyDeptHead(currentUser) && (task.assignedByRole === ROLES.DEPT_HEAD || task.assignedByName?.includes('Trưởng phòng')) && !task.isSelfAssigned) {
+        return false;
+      }
+      // Nếu nhiệm vụ này được giao cho chính mình (và không phải tự tạo cá nhân) -> KHÔNG ĐƯỢC sửa hoặc xóa
       if ((task.staffId === currentUser.id || task.staffName === currentUser.name) && !task.isSelfAssigned) {
         return false;
       }
-      // Trưởng phòng có quyền sửa/xóa nhiệm vụ mà chính mình giao cho nhân viên cấp dưới trong phòng
+      // Trưởng phòng có quyền sửa/xóa nhiệm vụ mà chính mình giao cho cấp dưới trong phòng
       return true;
     }
 
@@ -249,16 +356,8 @@ export default function TaskAndOKRAllocation() {
     return false;
   };
 
-  // Helper tính trạng thái thực tế: 'Mới tạo' / 'Mới giao' sau 1 tiếng (3600000 ms) chuyển thành "Đang tiến hành"
-  const ONE_HOUR_MS = 60 * 60 * 1000;
+  // Helper tính trạng thái thực tế (nhiệm vụ được tự động chuyển sang Đang tiến hành sau 1 tiếng bởi background interval)
   const getEffectiveTaskStatus = (task) => {
-    if (task.status === 'Mới tạo' || task.status === 'Mới giao') {
-      const createdTime = typeof task.createdAt === 'number' ? task.createdAt : new Date(task.createdAt || 0).getTime();
-      if (createdTime && Date.now() - createdTime >= ONE_HOUR_MS) {
-        return 'Đang tiến hành';
-      }
-      return task.status;
-    }
     return task.status || 'Đang tiến hành';
   };
 
@@ -296,17 +395,31 @@ export default function TaskAndOKRAllocation() {
   };
 
   const handleApproveTask = (taskId) => {
+    const taskToApprove = tasks.find((t) => t.id === taskId);
+    if (!taskToApprove || !canApproveTask(taskToApprove)) {
+      showToast('Bạn không có thẩm quyền phê duyệt nhiệm vụ này!', 'error');
+      return;
+    }
     setTasks(
       tasks.map((t) =>
-        t.id === taskId ? { ...t, approvalStatus: 'Đã duyệt', status: 'Đang tiến hành' } : t
+        t.id === taskId
+          ? {
+              ...t,
+              approvalStatus: 'Đã duyệt',
+              status: 'Đang tiến hành',
+              approverName: currentUser.name + (isBanLeader ? ' (Lãnh đạo Ban)' : ' (Trưởng phòng)'),
+            }
+          : t
       )
     );
     logAction('Phê duyệt nhiệm vụ', currentUser, `Phê duyệt nhiệm vụ ID ${taskId} giao cho cấp dưới.`, 'Quản lý OKR & Giao việc');
     showToast('Đã phê duyệt nhiệm vụ / KPI cá nhân thành công!', 'success');
   };
 
-  // Check OKR edit/delete permission: BAN_LEADER OR (DEPT_LEADER/DEPT_HEAD AND okr.createdBy === currentUser.id)
+  // Check OKR edit/delete permission:
   const canEditOrDeleteOkr = (okr) => {
+    // Nếu OKR thuộc kỳ đã kết thúc -> Khóa không cho phép sửa hoặc xóa
+    if (isQuarterInPast(okr.quarter)) return false;
     if (isBanLeader) return true;
     if (isDeptHead && okr.createdBy === currentUser.id) return true;
     return false;
@@ -314,12 +427,16 @@ export default function TaskAndOKRAllocation() {
 
   // --- OKR Handlers ---
   const handleOpenAddOkr = () => {
+    if (isQuarterInPast(selectedQuarter)) {
+      showToast('Kỳ đánh giá này đã kết thúc, không thể tạo thêm Mục tiêu OKR mới!', 'warning');
+      return;
+    }
     setOkrEdit(false);
     setCurrentOkrId(null);
     setOkrFormData({
       code: `OKR_0${okrs.length + 1}`,
       title: '',
-      quarter: selectedQuarter || currentQuarterInfo.display,
+      quarter: selectedQuarter.startsWith('Năm') ? currentQuarterInfo.display : (selectedQuarter || currentQuarterInfo.display),
       owner: currentUser?.name || 'Tài khoản hiện tại',
       progress: 0,
       status: 'Đang thực hiện',
@@ -330,6 +447,10 @@ export default function TaskAndOKRAllocation() {
 
   const handleOpenEditOkr = (okr, e) => {
     e?.stopPropagation();
+    if (isQuarterInPast(okr.quarter)) {
+      showToast('Mục tiêu OKR này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+      return;
+    }
     if (!canEditOrDeleteOkr(okr)) {
       showToast('Bạn không có quyền chỉnh sửa Mục tiêu OKR do người khác tạo!', 'error');
       return;
@@ -350,16 +471,21 @@ export default function TaskAndOKRAllocation() {
 
   const handleDeleteOkr = (okr, e) => {
     e?.stopPropagation();
+    if (isQuarterInPast(okr.quarter)) {
+      showToast('Mục tiêu OKR này thuộc kỳ đã kết thúc, không được phép xóa!', 'warning');
+      return;
+    }
     if (!canEditOrDeleteOkr(okr)) {
       showToast('Bạn không có quyền xóa Mục tiêu OKR do người khác tạo!', 'error');
       return;
     }
-    if (window.confirm('Bạn có chắc chắn muốn xóa Mục tiêu OKR này không?')) {
-      setOkrs(okrs.filter((o) => o.id !== okr.id));
-      setTasks(tasks.map((t) => (t.okrId === okr.id ? { ...t, okrId: '', type: 'Thường xuyên VTVL' } : t)));
-      logAction('Xóa OKR', currentUser, `Xóa Mục tiêu OKR: ${okr.code} - ${okr.title}`, 'Quản lý OKR & Giao việc');
-      showToast('Đã xóa Mục tiêu OKR thành công!', 'success');
-    }
+    setDeleteConfirmDialog({
+      open: true,
+      type: 'OKR',
+      item: okr,
+      title: 'Xác nhận xóa Mục tiêu OKR',
+      message: `Bạn có chắc chắn muốn xóa Mục tiêu Chiến lược "${okr.code} - ${okr.title}" không? Các nhiệm vụ trực thuộc sẽ được chuyển về dạng thường xuyên.`,
+    });
   };
 
   const handleSaveOkr = () => {
@@ -369,16 +495,31 @@ export default function TaskAndOKRAllocation() {
     }
     if (okrEdit) {
       setOkrs(
-        okrs.map((o) => (o.id === currentOkrId ? { ...o, ...okrFormData, progress: Number(okrFormData.progress) } : o))
+        okrs.map((o) =>
+          o.id === currentOkrId
+            ? {
+                ...o,
+                ...okrFormData,
+                deptId: o.deptId || currentUser?.deptId || (effectiveManagedDept !== 'ALL' ? effectiveManagedDept : '') || '',
+                department: o.department || currentUser?.department || '',
+                progress: Number(okrFormData.progress),
+              }
+            : o
+        )
       );
       logAction('Cập nhật OKR', currentUser, `Cập nhật Mục tiêu OKR: ${okrFormData.code} - ${okrFormData.title}`, 'Quản lý OKR & Giao việc');
       showToast('Cập nhật Mục tiêu OKR thành công!', 'success');
     } else {
+      const assignedDeptId = currentUser?.deptId || (effectiveManagedDept !== 'ALL' ? effectiveManagedDept : '') || '';
+      const deptObj = departments.find((d) => isSameDept(d.id, assignedDeptId, departments));
+
       const newOkr = {
         id: `okr-${Date.now()}`,
         ...okrFormData,
         owner: currentUser?.name || okrFormData.owner,
-        createdBy: currentUser.id, // Set createdBy field
+        createdBy: currentUser.id,
+        deptId: assignedDeptId,
+        department: deptObj ? deptObj.name : (currentUser?.department || ''),
         progress: Number(okrFormData.progress),
       };
       setOkrs([...okrs, newOkr]);
@@ -389,12 +530,21 @@ export default function TaskAndOKRAllocation() {
   };
 
   // --- Task Handlers ---
-  const handleOpenAddTask = () => {
+  const handleOpenAddTask = (targetOkrId = null) => {
+    if (isQuarterInPast(selectedQuarter)) {
+      showToast('Kỳ đánh giá này đã kết thúc, không thể giao nhiệm vụ mới vào kỳ này!', 'warning');
+      return;
+    }
     setTaskEdit(false);
     setCurrentTaskId(null);
     const defaultSub = eligibleSubordinates[0] || allAssignees[0];
     const defaultMaster = masterKPIs[0] || { code: 'A.001', title: 'Thẩm định hồ sơ', outputProduct: 'Tờ trình' };
     const defaultFactor = Number(defaultMaster.conversionFactor ?? defaultMaster.multiplier ?? 1.0);
+    const chosenOkrId = (typeof targetOkrId === 'string' && targetOkrId) ? targetOkrId : (okrs[0]?.id || '');
+    const norm = normalizePeriodAndQuarter(selectedQuarter);
+    const chosenQuarter = norm.isYear ? currentQuarterInfo.display : norm.quarterDisplay;
+    const chosenPeriod = norm.isYear ? currentQuarterInfo.periodKey : norm.periodKey;
+
     setTaskFormData({
       taskName: defaultMaster.title,
       staffId: defaultSub?.id || '',
@@ -408,8 +558,10 @@ export default function TaskAndOKRAllocation() {
       unit: 'Hồ sơ',
       startDate: new Date().toISOString().split('T')[0],
       deadline: '2026-12-31',
-      type: 'OKR',
-      okrId: okrs[0]?.id || '',
+      quarter: chosenQuarter,
+      period: chosenPeriod,
+      type: chosenOkrId ? 'OKR' : 'Thường xuyên VTVL',
+      okrId: chosenOkrId,
       status: 'Mới giao',
       currentValue: 0,
     });
@@ -417,12 +569,19 @@ export default function TaskAndOKRAllocation() {
   };
 
   const handleOpenEditTask = (task) => {
+    if (isQuarterInPast(task.quarter || task.period)) {
+      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+      return;
+    }
     if (!canEditOrDeleteTask(task)) {
       showToast('Nhiệm vụ này do cấp trên giao xuống, cấp dưới không có quyền chỉnh sửa!', 'error');
       return;
     }
     setTaskEdit(true);
     setCurrentTaskId(task.id);
+    const chosenQuarter = task.quarter || (selectedQuarter.startsWith('Năm') ? currentQuarterInfo.display : selectedQuarter);
+    const chosenPeriod = task.period || (task.quarter ? task.quarter.replace('Quý ', 'Q').replace('/', '_') : currentQuarterInfo.periodKey);
+
     setTaskFormData({
       taskName: task.taskName,
       staffId: task.staffId,
@@ -430,10 +589,14 @@ export default function TaskAndOKRAllocation() {
       staffDept: task.staffDept || 'Phòng chuyên môn',
       masterCode: task.masterCode || '',
       outputProduct: task.outputProduct,
+      multiplier: task.multiplier || 1.0,
+      conversionFactor: task.conversionFactor || 1.0,
       targetQty: task.targetQty,
       unit: task.unit || 'Hồ sơ',
       startDate: task.startDate || '2026-10-01',
       deadline: task.deadline,
+      quarter: chosenQuarter,
+      period: chosenPeriod,
       type: task.type,
       okrId: task.okrId || '',
       status: task.status,
@@ -444,15 +607,42 @@ export default function TaskAndOKRAllocation() {
 
   const handleDeleteTask = (id) => {
     const taskToDelete = tasks.find((t) => t.id === id);
+    if (taskToDelete && isQuarterInPast(taskToDelete.quarter || taskToDelete.period)) {
+      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép xóa!', 'warning');
+      return;
+    }
     if (taskToDelete && !canEditOrDeleteTask(taskToDelete)) {
       showToast('Nhiệm vụ này do cấp trên giao xuống, cấp dưới không có quyền xóa!', 'error');
       return;
     }
-    if (window.confirm('Bạn có chắc chắn muốn xóa nhiệm vụ đã giao này không?')) {
-      setTasks(tasks.filter((t) => t.id !== id));
-      logAction('Xóa nhiệm vụ', currentUser, `Xóa nhiệm vụ ID: ${id}`, 'Quản lý OKR & Giao việc');
+    setDeleteConfirmDialog({
+      open: true,
+      type: 'TASK',
+      item: taskToDelete,
+      title: 'Xác nhận xóa nhiệm vụ',
+      message: `Bạn có chắc chắn muốn xóa nhiệm vụ "${taskToDelete?.taskName}" (giao cho ${taskToDelete?.staffName}) không? Hành động này không thể hoàn tác.`,
+    });
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deleteConfirmDialog.item) return;
+
+    if (deleteConfirmDialog.type === 'OKR') {
+      const okr = deleteConfirmDialog.item;
+      setOkrs((prev) => prev.filter((o) => o.id !== okr.id));
+      setTasks((prev) =>
+        prev.map((t) => (t.okrId === okr.id ? { ...t, okrId: '', type: 'Thường xuyên VTVL' } : t))
+      );
+      logAction('Xóa OKR', currentUser, `Xóa Mục tiêu OKR: ${okr.code} - ${okr.title}`, 'Quản lý OKR & Giao việc');
+      showToast('Đã xóa Mục tiêu OKR thành công!', 'success');
+    } else if (deleteConfirmDialog.type === 'TASK') {
+      const task = deleteConfirmDialog.item;
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+      logAction('Xóa nhiệm vụ', currentUser, `Xóa nhiệm vụ ID: ${task.id}`, 'Quản lý OKR & Giao việc');
       showToast('Đã xóa nhiệm vụ thành công!', 'success');
     }
+
+    setDeleteConfirmDialog({ open: false, type: 'TASK', item: null, title: '', message: '' });
   };
 
   const handleMasterKPIChangeInForm = (code) => {
@@ -522,9 +712,14 @@ export default function TaskAndOKRAllocation() {
       logAction('Cập nhật nhiệm vụ', currentUser, `Cập nhật nhiệm vụ cho ${taskFormData.staffName}: "${taskFormData.taskName}"`, 'Quản lý OKR & Giao việc');
       showToast('Cập nhật nhiệm vụ thành công!', 'success');
     } else {
+      const norm = normalizePeriodAndQuarter(taskFormData.quarter || selectedQuarter);
+      const chosenQuarter = norm.isYear ? currentQuarterInfo.display : norm.quarterDisplay;
+      const chosenPeriod = norm.isYear ? currentQuarterInfo.periodKey : norm.periodKey;
       const newTask = {
         id: `task-${Date.now()}`,
         ...taskFormData,
+        quarter: chosenQuarter,
+        period: chosenPeriod,
         status: taskStatus || 'Mới giao',
         isBonus: isBonus,
         targetQty: Number(taskFormData.targetQty),
@@ -534,7 +729,7 @@ export default function TaskAndOKRAllocation() {
         assignedByRole: role,
         assignedById: currentUser.id,
         assignedByName: currentUser.name,
-        approverName: isBanLeader ? 'Lê Hoàng Long (Lãnh đạo Ban)' : `${currentUser.name} (Trưởng phòng)`,
+        approverName: currentApprover || (isBanLeader ? `${currentUser.name} (${currentUser.title || 'Lãnh đạo Ban'})` : `${currentUser.name} (Trưởng phòng)`),
         createdAt: Date.now(),
       };
       setTasks([newTask, ...tasks]);
@@ -552,32 +747,124 @@ export default function TaskAndOKRAllocation() {
     return (b.id || '').localeCompare(a.id || '', undefined, { numeric: true });
   };
 
+  // Helper xác định phòng ban của Mục tiêu OKR (sử dụng hàm dùng chung từ roles.js)
+  const getOkrDept = (okr) => getOkrDeptShared(okr, departments, allAssignees, tasks);
+
+  // Đảm bảo mọi OKR trong state/localStorage luôn có deptId và department chuẩn xác
+  useEffect(() => {
+    setOkrs((prevOkrs) => {
+      if (!prevOkrs) return prevOkrs;
+      let changed = false;
+      const updated = prevOkrs.map((okr) => {
+        if (!okr.deptId) {
+          const resolvedDept = getOkrDept(okr);
+          if (resolvedDept) {
+            const deptObj = departments.find((d) => isSameDept(d.id, resolvedDept, departments));
+            changed = true;
+            return {
+              ...okr,
+              deptId: resolvedDept,
+              department: deptObj ? deptObj.name : (okr.department || 'Phòng chuyên môn'),
+            };
+          }
+        }
+        return okr;
+      });
+      return changed ? updated : prevOkrs;
+    });
+  }, [departments]);
+
   // Filtering OKRs
   const filteredOkrs = [...okrs].sort(sortByNewest).filter((o) => {
-    const matchQuarter =
-      selectedQuarter === `Năm ${currentQuarterInfo.year}`
-        ? true
-        : o.quarter === selectedQuarter;
+    // 0. Phân quyền hiển thị OKR:
+    // - Trưởng ban (effectiveManagedDept === 'ALL') & Admin: Xem toàn bộ OKR
+    // - Phó Trưởng ban (effectiveManagedDept !== 'ALL'): Chỉ xem OKR của phòng mình phụ trách
+    // - Trưởng phòng (DEPT_HEAD): Chỉ xem OKR của phòng mình
+    const okrDept = getOkrDept(o);
+
+    if (isDeptHead) {
+      const myDept = currentUser.deptId || currentUser.department;
+      const isMyDept =
+        (myDept && isSameDept(okrDept, myDept, departments)) ||
+        (o.createdBy && o.createdBy === currentUser.id) ||
+        (o.owner && currentUser.name && o.owner.includes(currentUser.name));
+      if (!isMyDept) return false;
+    } else if (isBanLeader) {
+      if (effectiveManagedDept !== 'ALL') {
+        const isManagedDept =
+          (effectiveManagedDept && isSameDept(okrDept, effectiveManagedDept, departments)) ||
+          (o.createdBy && o.createdBy === currentUser.id) ||
+          (effectiveManagedDept && o.owner && isSameDept(o.owner, effectiveManagedDept, departments));
+        if (!isManagedDept) return false;
+      }
+    }
+
+    const normSelected = normalizePeriodAndQuarter(selectedQuarter);
+    const matchQuarter = (() => {
+      if (normSelected.isYear) return true;
+      const okrNorm = normalizePeriodAndQuarter(o.quarter);
+      return okrNorm.periodKey === normSelected.periodKey;
+    })();
     const matchSearch =
       o.code.toLowerCase().includes(okrSearch.toLowerCase()) ||
       o.title.toLowerCase().includes(okrSearch.toLowerCase()) ||
       o.owner.toLowerCase().includes(okrSearch.toLowerCase());
-    const matchStatus = okrStatusFilter === 'ALL' || o.status === okrStatusFilter;
+    const stats = getEffectiveOKRStats(o, tasks);
+    const matchStatus = okrStatusFilter === 'ALL' || stats.status === okrStatusFilter;
     return matchQuarter && matchSearch && matchStatus;
   });
 
-  // Filtering Tasks by Department instead of Staff
+  // Filtering Tasks by Department, Quarter, Search and OKR
   const filteredTasks = [...tasks].sort(sortByNewest).filter((t) => {
+    // 1. Khớp theo kỳ đánh giá (Quý I, II, III, IV hoặc Cả năm)
+    const normSelected = normalizePeriodAndQuarter(selectedQuarter);
+    const matchQuarter = (() => {
+      if (normSelected.isYear) return true;
+      const taskNorm = normalizePeriodAndQuarter(t.period || t.quarter || t.deadline);
+      return taskNorm.periodKey === normSelected.periodKey;
+    })();
+
     const matchSearch =
       t.taskName.toLowerCase().includes(taskSearch.toLowerCase()) ||
       t.staffName.toLowerCase().includes(taskSearch.toLowerCase()) ||
       t.outputProduct.toLowerCase().includes(taskSearch.toLowerCase());
 
     const staffObj = allAssignees.find((s) => s.id === t.staffId || s.name === t.staffName);
+    const taskDeptId = staffObj?.deptId || t.deptId;
+    const taskDeptName = staffObj?.department || t.staffDept;
+
+    // 2. Phân quyền xem nhiệm vụ theo cấp:
+    // - DEPT_HEAD: BẮT BUỘC CHỈ ĐƯỢC XEM NHIỆM VỤ THUỘC PHÒNG MÌNH
+    if (isDeptHead) {
+      const isMyDept =
+        (currentUser.deptId && taskDeptId === currentUser.deptId) ||
+        (currentUser.department && taskDeptName && taskDeptName.toLowerCase().trim() === currentUser.department.toLowerCase().trim()) ||
+        (currentUser.deptId && taskDeptName && departments.find((d) => d.id === currentUser.deptId)?.name === taskDeptName);
+      if (!isMyDept) return false;
+    } else if (isBanLeader) {
+      if (effectiveManagedDept !== 'ALL') {
+        // Phó Trưởng ban: Chỉ xem nhiệm vụ của phòng mình phụ trách (và nhiệm vụ của chính mình)
+        const isManagedDept =
+          t.staffId === currentUser.id ||
+          (effectiveManagedDept && (
+            isSameDept(taskDeptId, effectiveManagedDept, departments) ||
+            isSameDept(taskDeptName, effectiveManagedDept, departments)
+          ));
+        if (!isManagedDept) return false;
+      }
+    }
+
+    // 3. Khớp theo bộ lọc dropdown Phòng ban (khi Trưởng ban / Admin dùng)
+    const activeDeptFilter = isDeptHead
+      ? currentUser.deptId
+      : isBanLeader && effectiveManagedDept !== 'ALL'
+        ? effectiveManagedDept
+        : taskDeptFilter;
+
     const matchDept =
-      taskDeptFilter === 'ALL' ||
-      (staffObj && staffObj.deptId === taskDeptFilter) ||
-      (t.staffDept && t.staffDept.toLowerCase().includes(taskDeptFilter.toLowerCase()));
+      activeDeptFilter === 'ALL' ||
+      isSameDept(taskDeptId, activeDeptFilter, departments) ||
+      isSameDept(taskDeptName, activeDeptFilter, departments);
 
     const matchOkr =
       taskOkrFilter === 'ALL'
@@ -585,7 +872,7 @@ export default function TaskAndOKRAllocation() {
         : taskOkrFilter === 'NONE'
           ? !t.okrId
           : t.okrId === taskOkrFilter;
-    return matchSearch && matchDept && matchOkr;
+    return matchQuarter && matchSearch && matchDept && matchOkr;
   });
 
   const [page, setPage] = useState(0);
@@ -631,15 +918,20 @@ export default function TaskAndOKRAllocation() {
               Lãnh đạo Ban và Trưởng phòng thiết lập các mục tiêu trọng tâm để phân bổ nhiệm vụ xuống cấp dưới
             </Typography>
           </Box>
-          <Button
-            variant="contained"
-            color="primary"
-            startIcon={<AddRoundedIcon />}
-            onClick={handleOpenAddOkr}
-            sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
-          >
-            Thêm Mục tiêu OKR
-          </Button>
+          <Tooltip title={isQuarterInPast(selectedQuarter) ? 'Kỳ đánh giá này đã kết thúc, không thể tạo thêm OKR mới' : ''}>
+            <span>
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<AddRoundedIcon />}
+                onClick={handleOpenAddOkr}
+                disabled={isQuarterInPast(selectedQuarter)}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
+              >
+                Thêm Mục tiêu OKR
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
 
         <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
@@ -682,8 +974,9 @@ export default function TaskAndOKRAllocation() {
                   display: { xs: 'none', md: 'grid' },
                   gridTemplateColumns: '90px 1fr 140px 90px 40px',
                   alignItems: 'center',
+                  gap: 2,
                   px: 2.5,
-                  py: 1,
+                  py: 1.25,
                   bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : '#f8fafc'),
                   borderRadius: 1.5,
                   border: '1px solid',
@@ -703,20 +996,45 @@ export default function TaskAndOKRAllocation() {
 
               {filteredOkrs.map((okr) => {
                 const canEdit = canEditOrDeleteOkr(okr);
+                const okrStats = getEffectiveOKRStats(okr, tasks);
+                const okrProgress = okrStats.progress;
+                const okrStatus = okrStats.status;
+                const linkedTasks = okrStats.linkedTasks;
                 return (
-                  <Accordion key={okr.id} variant="outlined" sx={{ borderRadius: 2, '&:before': { display: 'none' } }}>
+                  <Accordion
+                    key={okr.id}
+                    variant="outlined"
+                    sx={{
+                      borderRadius: '8px !important',
+                      overflow: 'hidden',
+                      '&:before': { display: 'none' },
+                      border: '1px solid',
+                      borderColor: 'divider',
+                    }}
+                  >
                     <AccordionSummary
                       component="div"
                       expandIcon={<ExpandMoreRoundedIcon />}
                       sx={{
                         px: 2.5,
                         py: 0.5,
+                        minHeight: 56,
+                        '&.Mui-expanded': { minHeight: 56 },
+                        gap: 2,
                         '& .MuiAccordionSummary-content': {
                           display: 'flex',
                           alignItems: 'center',
                           width: '100%',
                           minWidth: 0,
                           m: 0,
+                          '&.Mui-expanded': { m: 0 },
+                        },
+                        '& .MuiAccordionSummary-expandIconWrapper': {
+                          width: 40,
+                          display: 'flex',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          color: 'action.active',
                         },
                       }}
                     >
@@ -727,7 +1045,6 @@ export default function TaskAndOKRAllocation() {
                           alignItems: 'center',
                           width: '100%',
                           gap: 2,
-                          pr: 1,
                         }}
                       >
                         <Chip label={okr.code} color="primary" size="small" sx={{ fontWeight: 700, width: 'fit-content' }} />
@@ -745,15 +1062,23 @@ export default function TaskAndOKRAllocation() {
                         </Typography>
                         <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                           <Chip
-                            label={okr.status}
+                            label={okrStats.hasTasks ? okrStatus : 'Chưa giao việc'}
                             size="small"
-                            color={okr.status === 'Đã hoàn thành' ? 'success' : 'warning'}
+                            color={okrStatus === 'Đã hoàn thành' ? 'success' : okrStats.hasTasks ? 'warning' : 'default'}
                             variant="outlined"
                             sx={{ fontWeight: 600, minWidth: 110 }}
                           />
                         </Box>
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
-                          <Tooltip title={canEdit ? 'Chỉnh sửa OKR' : 'Chỉ Ban lãnh đạo hoặc người tạo mới được sửa OKR này'}>
+                          <Tooltip
+                            title={
+                              isQuarterInPast(okr.quarter)
+                                ? 'Mục tiêu OKR này thuộc kỳ đã kết thúc, không thể chỉnh sửa'
+                                : canEdit
+                                  ? 'Chỉnh sửa OKR'
+                                  : 'Chỉ Ban lãnh đạo hoặc người tạo mới được sửa OKR này'
+                            }
+                          >
                             <span>
                               <IconButton
                                 size="small"
@@ -761,13 +1086,21 @@ export default function TaskAndOKRAllocation() {
                                   e.stopPropagation();
                                   handleOpenEditOkr(okr, e);
                                 }}
-                                disabled={!canEdit}
+                                disabled={!canEdit || isQuarterInPast(okr.quarter)}
                               >
                                 <EditRoundedIcon fontSize="small" />
                               </IconButton>
                             </span>
                           </Tooltip>
-                          <Tooltip title={canEdit ? 'Xóa OKR' : 'Chỉ Ban lãnh đạo hoặc người tạo mới được xóa OKR này'}>
+                          <Tooltip
+                            title={
+                              isQuarterInPast(okr.quarter)
+                                ? 'Mục tiêu OKR này thuộc kỳ đã kết thúc, không thể xóa'
+                                : canEdit
+                                  ? 'Xóa OKR'
+                                  : 'Chỉ Ban lãnh đạo hoặc người tạo mới được xóa OKR này'
+                            }
+                          >
                             <span>
                               <IconButton
                                 size="small"
@@ -776,7 +1109,7 @@ export default function TaskAndOKRAllocation() {
                                   e.stopPropagation();
                                   handleDeleteOkr(okr, e);
                                 }}
-                                disabled={!canEdit}
+                                disabled={!canEdit || isQuarterInPast(okr.quarter)}
                               >
                                 <DeleteRoundedIcon fontSize="small" />
                               </IconButton>
@@ -785,21 +1118,242 @@ export default function TaskAndOKRAllocation() {
                         </Box>
                       </Box>
                     </AccordionSummary>
-                    <AccordionDetails sx={{ bgcolor: 'action.hover', pt: 0 }}>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                        {okr.description || 'Không có mô tả chi tiết.'}
-                      </Typography>
-                      <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography variant="caption" color="text.secondary">
-                          Chủ sở hữu: <strong>{okr.owner}</strong> • Kỳ: {okr.quarter}
-                        </Typography>
-                        <Box sx={{ width: '40%', display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <LinearProgress variant="determinate" value={okr.progress} sx={{ flexGrow: 1, height: 6, borderRadius: 3 }} />
-                          <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                            {okr.progress}%
+                    <AccordionDetails
+                      sx={{
+                        bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.02)' : '#f8fafc'),
+                        p: 2.5,
+                        borderTop: '1px solid',
+                        borderColor: 'divider',
+                      }}
+                    >
+                      {/* Thẻ thông tin mục tiêu và tiến độ */}
+                      <Box
+                        sx={{
+                          display: 'grid',
+                          gridTemplateColumns: { xs: '1fr', md: '3fr 2fr' },
+                          gap: 2,
+                          mb: 2.5,
+                        }}
+                      >
+                        {/* Box 1: Nội dung chi tiết & Chủ sở hữu */}
+                        <Card variant="outlined" sx={{ p: 2, borderRadius: 2, bgcolor: 'background.paper' }}>
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              fontWeight: 700,
+                              color: 'primary.main',
+                              textTransform: 'uppercase',
+                              letterSpacing: 0.5,
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Nội dung & Yêu cầu trọng tâm
                           </Typography>
-                        </Box>
-                      </Stack>
+                          <Typography variant="body2" sx={{ color: 'text.primary', lineHeight: 1.6, mb: 1.5 }}>
+                            {okr.description || 'Chưa có mô tả chi tiết cho mục tiêu chiến lược này.'}
+                          </Typography>
+                          <Stack
+                            direction="row"
+                            spacing={2}
+                            alignItems="center"
+                            flexWrap="wrap"
+                            sx={{ pt: 1.25, borderTop: '1px dashed', borderColor: 'divider' }}
+                          >
+                            <Typography variant="caption" color="text.secondary">
+                              Chủ sở hữu: <strong>{okr.owner}</strong>
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">•</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Kỳ áp dụng: <strong>{okr.quarter}</strong>
+                            </Typography>
+                          </Stack>
+                        </Card>
+
+                        {/* Box 2: Tiến độ tổng thể OKR */}
+                        <Card
+                          variant="outlined"
+                          sx={{
+                            p: 2,
+                            borderRadius: 2,
+                            bgcolor: 'background.paper',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                fontWeight: 700,
+                                color: 'text.secondary',
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.5,
+                              }}
+                            >
+                              Tiến độ hoàn thành OKR
+                            </Typography>
+                            <Typography
+                              variant="subtitle1"
+                              sx={{
+                                fontWeight: 800,
+                                color:
+                                  okrProgress >= 80
+                                    ? 'success.main'
+                                    : okrProgress >= 50
+                                      ? 'primary.main'
+                                      : 'warning.main',
+                              }}
+                            >
+                              {okrProgress}%
+                            </Typography>
+                          </Box>
+                          <LinearProgress
+                            variant="determinate"
+                            value={okrProgress}
+                            sx={{
+                              height: 10,
+                              borderRadius: 5,
+                              bgcolor: (theme) =>
+                                theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : '#e2e8f0',
+                              '& .MuiLinearProgress-bar': {
+                                borderRadius: 5,
+                                bgcolor:
+                                  okrProgress >= 80
+                                    ? '#10b981'
+                                    : okrProgress >= 50
+                                      ? '#3b82f6'
+                                      : '#f59e0b',
+                              },
+                            }}
+                          />
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                            {!okrStats.hasTasks
+                              ? 'Chưa có nhiệm vụ cụ thể nào được phân bổ cho mục tiêu này'
+                              : okrStatus === 'Đã hoàn thành'
+                                ? '✓ Đã hoàn thành toàn bộ chỉ tiêu chiến lược đề ra'
+                                : `Đang triển khai thực hiện (${okrStats.completedTasksCount}/${okrStats.totalTasksCount} nhiệm vụ đã hoàn thành)`}
+                          </Typography>
+                        </Card>
+                      </Box>
+
+                      {/* Bảng các nhiệm vụ gắn với OKR này */}
+                      {(() => {
+                        return (
+                          <Box>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.25 }}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <AssignmentRoundedIcon fontSize="small" color="primary" />
+                                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                  Nhiệm vụ cụ thể trực thuộc OKR ({linkedTasks.length})
+                                </Typography>
+                              </Stack>
+                              {eligibleSubordinates.length > 0 && (
+                                <Tooltip title={isQuarterInPast(okr.quarter) ? 'Mục tiêu OKR này thuộc kỳ đã kết thúc, không thể giao việc mới' : ''}>
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      startIcon={<AddRoundedIcon />}
+                                      onClick={() => handleOpenAddTask(okr.id)}
+                                      disabled={isQuarterInPast(okr.quarter)}
+                                      sx={{
+                                        textTransform: 'none',
+                                        fontWeight: 700,
+                                        fontSize: '0.8rem',
+                                        py: 0.6,
+                                        px: 1.75,
+                                        borderRadius: 2,
+                                        bgcolor: '#0284c7',
+                                        color: '#ffffff',
+                                        boxShadow: '0 2px 8px rgba(2, 132, 199, 0.35)',
+                                        '&:hover': {
+                                          bgcolor: '#0369a1',
+                                          boxShadow: '0 4px 12px rgba(2, 132, 199, 0.5)',
+                                        },
+                                      }}
+                                    >
+                                      Giao việc với OKR này
+                                    </Button>
+                                  </span>
+                                </Tooltip>
+                              )}
+                            </Box>
+
+                            {linkedTasks.length === 0 ? (
+                              <Paper
+                                variant="outlined"
+                                sx={{
+                                  p: 2,
+                                  textAlign: 'center',
+                                  bgcolor: 'background.paper',
+                                  borderRadius: 1.5,
+                                  borderStyle: 'dashed',
+                                }}
+                              >
+                                <Typography variant="body2" color="text.secondary">
+                                  Chưa có nhiệm vụ cụ thể nào được phân bổ cho mục tiêu này.
+                                </Typography>
+                              </Paper>
+                            ) : (
+                              <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1.5, bgcolor: 'background.paper' }}>
+                                <Table size="small">
+                                  <TableHead sx={{ bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : '#f1f5f9') }}>
+                                    <TableRow>
+                                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Tên nhiệm vụ / Sản phẩm đầu ra</TableCell>
+                                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem' }}>Cán bộ thực hiện</TableCell>
+                                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', textAlign: 'center', minWidth: 160 }}>Chỉ tiêu & Tiến độ</TableCell>
+                                      <TableCell sx={{ fontWeight: 700, fontSize: '0.75rem', textAlign: 'center' }}>Trạng thái</TableCell>
+                                    </TableRow>
+                                  </TableHead>
+                                  <TableBody>
+                                    {linkedTasks.map((lt) => {
+                                      const currentVal = Number(lt.currentValue || 0);
+                                      const targetVal = Number(lt.targetQty || 1);
+                                      const pct = Math.min(100, Math.round((currentVal / targetVal) * 100));
+                                      return (
+                                        <TableRow key={lt.id} hover>
+                                          <TableCell>
+                                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.825rem' }}>
+                                              {lt.taskName}
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                              Sản phẩm: {lt.outputProduct} • ĐVT: {lt.unit}
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell>
+                                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.825rem' }}>
+                                              {lt.staffName}
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                              {lt.staffDept}
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell sx={{ textAlign: 'center' }}>
+                                            <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                                              {currentVal} / {targetVal} {lt.unit} ({pct}%)
+                                            </Typography>
+                                            <LinearProgress variant="determinate" value={pct} sx={{ height: 6, borderRadius: 3 }} />
+                                          </TableCell>
+                                          <TableCell sx={{ textAlign: 'center' }}>
+                                            <Chip
+                                              label={lt.status || 'Đang tiến hành'}
+                                              size="small"
+                                              color={lt.status === 'Đã hoàn thành' ? 'success' : lt.status === 'Chờ duyệt' ? 'warning' : 'default'}
+                                              sx={{ fontWeight: 600, fontSize: '0.7rem' }}
+                                            />
+                                          </TableCell>
+                                        </TableRow>
+                                      );
+                                    })}
+                                  </TableBody>
+                                </Table>
+                              </TableContainer>
+                            )}
+                          </Box>
+                        );
+                      })()}
                     </AccordionDetails>
                   </Accordion>
                 );
@@ -814,22 +1368,34 @@ export default function TaskAndOKRAllocation() {
         <Box sx={{ p: 2.5, bgcolor: 'action.hover', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Bảng Giao nhiệm vụ & Phân bổ KPI cho Cấp dưới
+              Bảng Giao nhiệm vụ & Phân bổ KPI cho Cấp dưới - {selectedQuarter} ({filteredTasks.length} nhiệm vụ)
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Giao việc trực tiếp theo phân cấp quản lý (Lãnh đạo Ban giao Trưởng phòng; Trưởng phòng giao Chuyên viên)
             </Typography>
           </Box>
-          <Button
-            variant="contained"
-            color="success"
-            startIcon={<AddRoundedIcon />}
-            onClick={handleOpenAddTask}
-            disabled={eligibleSubordinates.length === 0}
-            sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
+          <Tooltip
+            title={
+              isQuarterInPast(selectedQuarter)
+                ? 'Kỳ đánh giá này đã kết thúc, không thể giao nhiệm vụ mới'
+                : eligibleSubordinates.length === 0
+                  ? 'Không có cán bộ cấp dưới đủ điều kiện giao việc'
+                  : ''
+            }
           >
-            Giao nhiệm vụ mới
-          </Button>
+            <span>
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={<AddRoundedIcon />}
+                onClick={handleOpenAddTask}
+                disabled={isQuarterInPast(selectedQuarter) || eligibleSubordinates.length === 0}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5 }}
+              >
+                Giao nhiệm vụ mới
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
 
         {/* Task Filtering Toolbar - Filter by Department */}
@@ -851,11 +1417,27 @@ export default function TaskAndOKRAllocation() {
               select
               size="small"
               label="Lọc theo Phòng ban"
-              value={taskDeptFilter}
+              value={
+                isDeptHead
+                  ? (currentUser.deptId || 'DEP_TCD')
+                  : (isBanLeader && effectiveManagedDept !== 'ALL')
+                    ? effectiveManagedDept
+                    : taskDeptFilter
+              }
+              disabled={isDeptHead || (isBanLeader && effectiveManagedDept !== 'ALL')}
               onChange={(e) => setTaskDeptFilter(e.target.value)}
-              sx={{ minWidth: 220 }}
+              sx={{ minWidth: 240 }}
+              helperText={
+                isDeptHead
+                  ? 'Cố định theo phòng của Trưởng phòng'
+                  : isBanLeader && effectiveManagedDept !== 'ALL'
+                    ? 'Cố định theo phòng phụ trách'
+                    : ''
+              }
             >
-              <MenuItem value="ALL">-- Tất cả phòng ban --</MenuItem>
+              {!isDeptHead && !(isBanLeader && effectiveManagedDept !== 'ALL') && (
+                <MenuItem value="ALL">-- Tất cả phòng ban --</MenuItem>
+              )}
               {departments.map((d) => (
                 <MenuItem key={d.id} value={d.id}>
                   {d.name}
@@ -873,7 +1455,7 @@ export default function TaskAndOKRAllocation() {
             >
               <MenuItem value="ALL">Tất cả mục tiêu OKR</MenuItem>
               <MenuItem value="NONE">Nhiệm vụ thường xuyên (Không gán OKR)</MenuItem>
-              {okrs.map((o) => (
+              {filteredOkrs.map((o) => (
                 <MenuItem key={o.id} value={o.id}>
                   {o.code}: {o.title}
                 </MenuItem>
@@ -1077,10 +1659,14 @@ export default function TaskAndOKRAllocation() {
                       </TableCell>
                       <TableCell align="right">
                         {(() => {
+                          const isPast = isQuarterInPast(t.quarter || t.period);
                           const canEditDelete = canEditOrDeleteTask(t);
-                          if (!canEditDelete) {
+                          if (!canEditDelete || isPast) {
+                            const lockReason = isPast
+                              ? 'Nhiệm vụ thuộc kỳ đã kết thúc: Không thể sửa hoặc xóa'
+                              : 'Nhiệm vụ do cấp trên giao xuống: Cấp dưới không có quyền sửa hoặc xóa';
                             return (
-                              <Tooltip title="Nhiệm vụ do cấp trên giao xuống: Cấp dưới không có quyền sửa hoặc xóa" arrow placement="top">
+                              <Tooltip title={lockReason} arrow placement="top">
                                 <span>
                                   <IconButton size="small" disabled sx={{ color: 'text.disabled' }}>
                                     <LockRoundedIcon fontSize="small" />
@@ -1193,7 +1779,7 @@ export default function TaskAndOKRAllocation() {
       </Dialog>
 
       {/* Task Dialog Form */}
-      <Dialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {taskEdit ? 'Chỉnh sửa Phân bổ Nhiệm vụ & KPI' : 'Giao KPI cho Cấp dưới'}
         </DialogTitle>
@@ -1235,30 +1821,195 @@ export default function TaskAndOKRAllocation() {
             value={taskFormData.okrId || ''}
             onChange={(e) => setTaskFormData({ ...taskFormData, okrId: e.target.value, type: e.target.value ? 'OKR' : 'Thường xuyên VTVL' })}
             sx={{ mb: 2 }}
+            SelectProps={{
+              MenuProps: {
+                PaperProps: {
+                  sx: {
+                    maxHeight: 320,
+                    maxWidth: { xs: '90vw', md: 800 },
+                  },
+                },
+              },
+            }}
           >
-            <MenuItem value="">-- Không gán OKR (Nhiệm vụ Thường xuyên VTVL) --</MenuItem>
-            {okrs.map((o) => (
-              <MenuItem key={o.id} value={o.id}>
-                {o.code}: {o.title}
-              </MenuItem>
-            ))}
+            <MenuItem value="">
+              <em>-- Không gán OKR (Nhiệm vụ Thường xuyên VTVL) --</em>
+            </MenuItem>
+            {filteredOkrs
+              .filter((o) => !isQuarterInPast(o.quarter) || o.id === taskFormData.okrId)
+              .map((o) => (
+                <MenuItem key={o.id} value={o.id} sx={{ whiteSpace: 'normal', py: 1 }}>
+                  <Box>
+                    <Chip label={o.code} size="small" color="primary" sx={{ mr: 1, height: 20, fontWeight: 700, fontSize: '0.7rem' }} />
+                    <Typography component="span" variant="body2" sx={{ fontWeight: 600 }}>
+                      {o.title}
+                    </Typography>
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      ({o.quarter})
+                    </Typography>
+                  </Box>
+                </MenuItem>
+              ))}
           </TextField>
 
-          <TextField
-            select
+          {/* Chọn Tiêu chí KPI mẫu (Ngân hàng gốc) - Dạng Autocomplete tìm kiếm thông minh */}
+          <Autocomplete
+            id="task-master-kpi-select"
             fullWidth
-            label="Chọn Tiêu chí KPI mẫu (Ngân hàng gốc)"
-            InputLabelProps={{ shrink: true }}
-            value={taskFormData.masterCode}
-            onChange={(e) => handleMasterKPIChangeInForm(e.target.value)}
-            sx={{ mb: 2 }}
-          >
-            {masterKPIs.map((m) => (
-              <MenuItem key={m.id} value={m.code}>
-                [{m.code}{m.groupCode ? ` - Nhóm ${m.groupCode}` : ''}] {m.title.length > 55 ? m.title.slice(0, 55) + '...' : m.title} (Điểm: {m.score})
-              </MenuItem>
-            ))}
-          </TextField>
+            popupIcon={<ExpandMoreRoundedIcon sx={{ fontSize: 22, color: 'text.secondary' }} />}
+            options={masterKPIs}
+            getOptionLabel={(option) => {
+              if (!option) return '';
+              if (typeof option === 'string') return option;
+              return `[${option.code}] ${option.title}`;
+            }}
+            value={masterKPIs.find((m) => m.code === taskFormData.masterCode) || null}
+            onChange={(_, newValue) => {
+              if (newValue && newValue.code) {
+                handleMasterKPIChangeInForm(newValue.code);
+              } else {
+                handleMasterKPIChangeInForm('');
+              }
+            }}
+            isOptionEqualToValue={(option, val) => option?.code === val?.code || option?.id === val?.id}
+            filterOptions={(options, { inputValue }) => {
+              const q = (inputValue || '').toLowerCase().trim();
+              if (!q) return options;
+              return options.filter((item) => {
+                const code = (item.code || '').toLowerCase();
+                const title = (item.title || '').toLowerCase();
+                const prod = (item.outputProduct || '').toLowerCase();
+                const comp = (item.complexity || '').toLowerCase();
+                return code.includes(q) || title.includes(q) || prod.includes(q) || comp.includes(q);
+              });
+            }}
+            noOptionsText="Không tìm thấy tiêu chí KPI phù hợp trong Ngân hàng gốc"
+            renderOption={(props, option) => {
+              const factor = option.conversionFactor || option.multiplier || 1.0;
+              return (
+                <Box
+                  component="li"
+                  {...props}
+                  key={option.id || option.code}
+                  sx={{
+                    py: 1.2,
+                    px: 1.5,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    '&:last-child': { borderBottom: 'none' },
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Box sx={{ width: '100%' }}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+                      <Chip
+                        label={option.code}
+                        size="small"
+                        color="primary"
+                        sx={{ fontWeight: 800, height: 22, fontSize: '0.72rem' }}
+                      />
+                      <Chip
+                        label={`Hệ số: x${factor}`}
+                        size="small"
+                        color="secondary"
+                        variant="outlined"
+                        sx={{ fontWeight: 700, height: 22, fontSize: '0.72rem' }}
+                      />
+                      {option.complexity && (
+                        <Chip
+                          label={`Độ phức tạp: ${option.complexity}`}
+                          size="small"
+                          variant="outlined"
+                          sx={{ height: 22, fontSize: '0.72rem', borderColor: 'divider', color: 'text.secondary' }}
+                        />
+                      )}
+                      {option.score && (
+                        <Chip
+                          label={`Điểm: ${option.score}`}
+                          size="small"
+                          variant="outlined"
+                          sx={{ height: 22, fontSize: '0.72rem', color: 'text.secondary' }}
+                        />
+                      )}
+                    </Stack>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 600,
+                        color: 'text.primary',
+                        whiteSpace: 'normal',
+                        wordBreak: 'break-word',
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {option.title}
+                    </Typography>
+                    {option.outputProduct && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: 'block', mt: 0.4, whiteSpace: 'normal', wordBreak: 'break-word' }}
+                      >
+                        📦 Sản phẩm đầu ra: <strong>{option.outputProduct}</strong>
+                      </Typography>
+                    )}
+                  </Box>
+                </Box>
+              );
+            }}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Chọn Tiêu chí KPI mẫu (Ngân hàng gốc)"
+                placeholder="Gõ mã (A.001, B.019...) hoặc từ khóa để tìm kiếm nhanh..."
+                helperText="Chọn tiêu chuẩn từ Ngân hàng gốc để tự động điền Tên, Sản phẩm đầu ra và Hệ số chuẩn."
+              />
+            )}
+            slotProps={{
+              popper: {
+                sx: {
+                  zIndex: 1400,
+                },
+              },
+              paper: {
+                elevation: 8,
+                sx: {
+                  borderRadius: 2,
+                  mt: 0.5,
+                  maxHeight: 380,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.06)',
+                },
+              },
+            }}
+            sx={{
+              mb: 2,
+              '& .MuiAutocomplete-endAdornment': {
+                right: '8px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
+              },
+              '& .MuiAutocomplete-popupIndicator, & .MuiAutocomplete-clearIndicator': {
+                border: 'none !important',
+                backgroundColor: 'transparent !important',
+                boxShadow: 'none !important',
+                padding: '4px !important',
+                margin: 0,
+                width: 'auto !important',
+                height: 'auto !important',
+                color: 'text.secondary',
+                transition: 'transform 0.2s ease, color 0.2s ease',
+                '&:hover': {
+                  backgroundColor: 'transparent !important',
+                  color: 'primary.main',
+                },
+              },
+            }}
+          />
 
           <TextField
             fullWidth
@@ -1279,33 +2030,22 @@ export default function TaskAndOKRAllocation() {
             />
             <TextField
               fullWidth
+              label="Đơn vị tính (Hồ sơ, Lượt, Báo cáo...)"
+              InputLabelProps={{ shrink: true }}
+              value={taskFormData.unit}
+              onChange={(e) => setTaskFormData({ ...taskFormData, unit: e.target.value })}
+            />
+          </Stack>
+
+          <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+            <TextField
+              fullWidth
               type="number"
               label="Chỉ tiêu khối lượng"
               InputLabelProps={{ shrink: true }}
               value={taskFormData.targetQty}
               onChange={(e) => setTaskFormData({ ...taskFormData, targetQty: e.target.value })}
             />
-          </Stack>
-
-          <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
-            <TextField
-              fullWidth
-              label="Đơn vị tính (Hồ sơ, Lượt, Báo cáo...)"
-              InputLabelProps={{ shrink: true }}
-              value={taskFormData.unit}
-              onChange={(e) => setTaskFormData({ ...taskFormData, unit: e.target.value })}
-            />
-            <TextField
-              fullWidth
-              type="number"
-              label="Khối lượng thực tế đạt được (currentValue)"
-              InputLabelProps={{ shrink: true }}
-              value={taskFormData.currentValue}
-              onChange={(e) => setTaskFormData({ ...taskFormData, currentValue: Number(e.target.value) })}
-            />
-          </Stack>
-
-          <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
             <TextField
               fullWidth
               type="date"
@@ -1314,6 +2054,34 @@ export default function TaskAndOKRAllocation() {
               value={taskFormData.deadline}
               onChange={(e) => setTaskFormData({ ...taskFormData, deadline: e.target.value })}
             />
+          </Stack>
+
+          {taskEdit ? (
+            <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+              <TextField
+                fullWidth
+                type="number"
+                label="Khối lượng thực tế đạt được"
+                InputLabelProps={{ shrink: true }}
+                helperText="Cập nhật tiến độ hoàn thành thực tế nếu cần"
+                value={taskFormData.currentValue}
+                onChange={(e) => setTaskFormData({ ...taskFormData, currentValue: Number(e.target.value) })}
+              />
+              <TextField
+                select
+                fullWidth
+                label="Trạng thái thực hiện"
+                InputLabelProps={{ shrink: true }}
+                value={taskFormData.status}
+                onChange={(e) => setTaskFormData({ ...taskFormData, status: e.target.value })}
+              >
+                <MenuItem value="Mới giao">Mới giao</MenuItem>
+                <MenuItem value="Đang tiến hành">Đang tiến hành</MenuItem>
+                <MenuItem value="Đã hoàn thành">Đã hoàn thành</MenuItem>
+                <MenuItem value="Trễ hạn">Trễ hạn</MenuItem>
+              </TextField>
+            </Stack>
+          ) : (
             <TextField
               select
               fullWidth
@@ -1321,13 +2089,14 @@ export default function TaskAndOKRAllocation() {
               InputLabelProps={{ shrink: true }}
               value={taskFormData.status}
               onChange={(e) => setTaskFormData({ ...taskFormData, status: e.target.value })}
+              sx={{ mb: 2 }}
             >
               <MenuItem value="Mới giao">Mới giao</MenuItem>
               <MenuItem value="Đang tiến hành">Đang tiến hành</MenuItem>
               <MenuItem value="Đã hoàn thành">Đã hoàn thành</MenuItem>
               <MenuItem value="Trễ hạn">Trễ hạn</MenuItem>
             </TextField>
-          </Stack>
+          )}
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setTaskDialogOpen(false)} color="inherit" sx={{ textTransform: 'none' }}>
@@ -1335,6 +2104,75 @@ export default function TaskAndOKRAllocation() {
           </Button>
           <Button onClick={handleSaveTask} variant="contained" color="primary" sx={{ textTransform: 'none', fontWeight: 600 }}>
             {taskEdit ? 'Lưu thay đổi' : 'Giao việc'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog Xác nhận Xóa hiện đại thay thế pop-up mặc định của trình duyệt */}
+      <Dialog
+        open={deleteConfirmDialog.open}
+        onClose={() => setDeleteConfirmDialog({ ...deleteConfirmDialog, open: false })}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            p: 1,
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1, pt: 2, px: 3, display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Avatar sx={{ bgcolor: '#fee2e2', color: '#dc2626', width: 44, height: 44 }}>
+            <DeleteForeverRoundedIcon />
+          </Avatar>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '1.1rem', color: '#1e293b' }}>
+              {deleteConfirmDialog.title || 'Xác nhận xóa'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Hành động này sẽ xóa dữ liệu khỏi hệ thống
+            </Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ px: 3, py: 1.5 }}>
+          <Typography variant="body2" sx={{ color: '#475569', lineHeight: 1.6 }}>
+            {deleteConfirmDialog.message}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1 }}>
+          <Button
+            onClick={() => setDeleteConfirmDialog({ ...deleteConfirmDialog, open: false })}
+            variant="outlined"
+            color="inherit"
+            sx={{
+              textTransform: 'none',
+              fontWeight: 600,
+              borderRadius: 2,
+              px: 2.5,
+              borderColor: '#cbd5e1',
+              color: '#475569',
+              '&:hover': { bgcolor: '#f1f5f9', borderColor: '#94a3b8' },
+            }}
+          >
+            Hủy bỏ
+          </Button>
+          <Button
+            onClick={handleConfirmDelete}
+            variant="contained"
+            color="error"
+            startIcon={<DeleteForeverRoundedIcon />}
+            sx={{
+              textTransform: 'none',
+              fontWeight: 700,
+              borderRadius: 2,
+              px: 2.5,
+              bgcolor: '#dc2626',
+              boxShadow: '0 4px 12px rgba(220, 38, 38, 0.25)',
+              '&:hover': { bgcolor: '#b91c1c' },
+            }}
+          >
+            Xác nhận xóa
           </Button>
         </DialogActions>
       </Dialog>

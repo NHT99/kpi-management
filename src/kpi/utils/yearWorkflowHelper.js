@@ -3,8 +3,6 @@
  * Tuân thủ quy định Hướng dẫn 05-HD/TU của Ban Tổ chức Tỉnh ủy (BTCTU)
  */
 
-import { checkYearlyGradeCap, determineYearlyGrade } from './scoringEngine';
-
 /**
  * Kiểm tra xem một Quý có được ban hành Quyết định xếp loại riêng hay không:
  * - Quý I, Quý II, Quý III: Tiến hành tự chấm, Sếp duyệt và ban hành quyết định xếp loại riêng biệt từng quý.

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -32,6 +32,7 @@ import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
@@ -41,10 +42,11 @@ import MenuItem from '@mui/material/MenuItem';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
-import { ROLES } from '../../rbac/roles';
-import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { ROLES, getEffectiveManagedDeptId } from '../../rbac/roles';
+import { getFullYearQuarterOptions } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import DocumentGeneratorModal from './DocumentGeneratorModal';
+import { isQuarterEligibleForSeparateDecision } from '../utils/yearWorkflowHelper';
 
 import {
   INITIAL_AGENCY_APPROVALS,
@@ -52,9 +54,8 @@ import {
   INITIAL_ASSIGNED_TASKS,
 } from '../data/mockKPIData';
 import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
-import { INITIAL_DEPT_STAFF } from '../kpiData';
 
-const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
+const { evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
 
 export default function AgencyApprovalView() {
   const { currentUser, role, hasPermission } = useAuth();
@@ -67,13 +68,18 @@ export default function AgencyApprovalView() {
   const [evaluations, setEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
-  const [assignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
+  const [assignedTasks, setAssignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
 
   // Thẩm quyền phê duyệt: Lãnh đạo Ban hoặc Super Admin
   const canApprove =
     hasPermission(PERMISSIONS.KPI_AGENCY_APPROVE) ||
     role === ROLES.BAN_LEADER ||
     role === ROLES.SUPER_ADMIN;
+
+  // Trưởng ban / Chủ tịch Hội đồng: người duy nhất có thẩm quyền ký và ban hành Quyết định toàn Ban
+  const isAgencyHead =
+    role === ROLES.SUPER_ADMIN ||
+    (role === ROLES.BAN_LEADER && getEffectiveManagedDeptId(currentUser, departments) === 'ALL');
 
   // Mặc định chọn Quý III/2026 hoặc Cả Năm nếu Quý IV chưa có thẩm định riêng
   const [selectedPeriod, setSelectedPeriod] = useState('Q3_2026');
@@ -96,6 +102,7 @@ export default function AgencyApprovalView() {
 
   const selectedPeriodObj = PERIOD_OPTIONS.find((p) => p.value === selectedPeriod);
   const selectedPeriodLabel = selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod;
+  const isQ4 = !isQuarterEligibleForSeparateDecision(selectedPeriod);
 
   // Lấy trạng thái phê duyệt của kỳ đang chọn từ localStorage
   const currentApproval = useMemo(() => {
@@ -111,25 +118,29 @@ export default function AgencyApprovalView() {
     );
   }, [agencyApprovals, selectedPeriod]);
 
-  // Combine staff master data
-  const allAvailableStaffs = useMemo(() => {
-    const combined = [...staffs];
-    INITIAL_DEPT_STAFF.forEach((ds) => {
-      if (!combined.some((s) => s.id === ds.id || s.name === ds.name)) {
-        combined.push({
-          id: ds.id,
-          employeeCode: ds.employeeCode || `CB-${ds.id}`,
-          name: ds.name,
-          title: ds.title,
-          deptId: 'DEP_TCD',
-          role: ds.role || ROLES.STAFF,
-          status: 'ACTIVE',
-          email: ds.email,
-        });
+  // Tự động đồng bộ và dọn dẹp các bản ghi đánh giá của cán bộ không còn trong danh mục (staff-02, staff-03, staff-04)
+  useEffect(() => {
+    const obsoleteIds = ['staff-02', 'staff-03', 'staff-04'];
+    const obsoleteNames = ['Lê Thị Bích', 'Phạm Văn Đức', 'Hoàng Minh Tuấn'];
+
+    setEvaluations((prevEvals) => {
+      const nextEvals = (prevEvals || []).filter((e) => !obsoleteIds.includes(e.staffId) && !obsoleteNames.includes(e.staffName));
+      if (nextEvals.length !== (prevEvals || []).length) {
+        return nextEvals;
       }
+      return prevEvals;
     });
-    return combined;
-  }, [staffs]);
+
+    setAssignedTasks((prev) => {
+      if (prev && prev.some((t) => obsoleteIds.includes(t.staffId) || obsoleteNames.includes(t.staffName))) {
+        return prev.filter((t) => !obsoleteIds.includes(t.staffId) && !obsoleteNames.includes(t.staffName));
+      }
+      return prev;
+    });
+  }, [setEvaluations, setAssignedTasks]);
+
+  // Staff master data directly from stored staffs
+  const allAvailableStaffs = staffs;
 
   // Kiểm tra nếu kỳ là Quý IV (không có quyết định xếp loại riêng theo 05-HD/TU)
   const isQ4Period = selectedPeriod.startsWith('Q4');
@@ -158,12 +169,12 @@ export default function AgencyApprovalView() {
       const headName = headStaff
         ? headStaff.name
         : dept.id === 'DEP_TCD'
-        ? 'Trần Thị Mai'
-        : dept.id === 'DEP_TCCB'
-        ? 'Phạm Thị Lan'
-        : dept.id === 'DEP_VP'
-        ? 'Nguyễn Văn Cường'
-        : 'Lãnh đạo phòng';
+          ? 'Trần Thị Mai'
+          : dept.id === 'DEP_TCCB'
+            ? 'Phạm Thị Lan'
+            : dept.id === 'DEP_VP'
+              ? 'Nguyễn Văn Cường'
+              : 'Lãnh đạo phòng';
 
       // Lọc các bản đánh giá của phòng trong kỳ đang chọn
       const deptEvals = evaluations.filter((e) => {
@@ -179,16 +190,21 @@ export default function AgencyApprovalView() {
       const avgScore =
         deptEvals.length > 0
           ? Math.round(
-              (deptEvals.reduce((sum, e) => sum + (Number(e.totalScore) || 0), 0) / deptEvals.length) * 10
-            ) / 10
+            (deptEvals.reduce((sum, e) => sum + (Number(e.totalScore) || 0), 0) / deptEvals.length) * 10
+          ) / 10
           : 88.5;
 
-      // Tỷ lệ hoàn thành nhiệm vụ
-      const deptTasks = assignedTasks.filter((t) =>
-        deptStaffList.some((s) => s.id === t.staffId || s.name === t.staffName)
-      );
+      // Tỷ lệ hoàn thành nhiệm vụ theo kỳ đang chọn
+      const deptTasks = assignedTasks.filter((t) => {
+        const matchesStaff = deptStaffList.some((s) => s.id === t.staffId || s.name === t.staffName);
+        if (!matchesStaff) return false;
+        if (selectedPeriod === 'YEAR_2026') return true;
+        return t.period === selectedPeriod || (!t.period && selectedPeriod === 'Q4_2026');
+      });
       const completedTasks = deptTasks.filter((t) => t.progress === 100 || t.status === 'Đã hoàn thành').length;
-      const completionRate = deptTasks.length > 0 ? Math.round((completedTasks / deptTasks.length) * 100) : 92.5;
+      const completionRate = deptTasks.length > 0
+        ? Math.round((completedTasks / deptTasks.length) * 100)
+        : (deptEvals.length > 0 ? 100 : 0);
 
       return {
         id: dept.id,
@@ -196,15 +212,15 @@ export default function AgencyApprovalView() {
         code: dept.code,
         head: headName,
         staffCount,
-        completionRate: completionRate || 90.0,
+        completionRate,
         avgScore: avgScore || 88.0,
         reviewedCount: deptEvals.length || staffCount,
         status: currentApproval.isApproved ? 'APPROVED' : 'PENDING_COUNCIL',
         ratingDistribution: {
-          xuatSac: xuatSac || (dept.id === 'DEP_TCD' ? 2 : dept.id === 'DEP_VP' ? 1 : 0),
-          tot: tot || (dept.id === 'DEP_TCCB' ? 2 : dept.id === 'DEP_TCD' ? 2 : 1),
-          hoanThanh: hoanThanh || (dept.id === 'DEP_BV' ? 1 : 0),
-          khongHoanThanh: khongHoanThanh,
+          xuatSac,
+          tot,
+          hoanThanh,
+          khongHoanThanh,
         },
       };
     });
@@ -350,16 +366,18 @@ export default function AgencyApprovalView() {
       {/* Thông báo nghiệp vụ Quý IV theo Hướng dẫn 05-HD/TU */}
       {isQ4Period ? (
         <Card variant="outlined" sx={{ borderRadius: 2, p: 5, textAlign: 'center', bgcolor: 'background.paper' }}>
-          <InfoOutlinedIcon sx={{ fontSize: 56, color: 'info.main', mb: 1.5 }} />
-          <Typography variant="h6" sx={{ fontWeight: 700, color: 'text.primary', mb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1.5 }}>
+            <InfoOutlinedIcon sx={{ fontSize: 56, color: 'info.main' }} />
+          </Box>
+          <Typography variant="h6" sx={{ fontWeight: 700, color: 'text.primary', mb: 1, textAlign: 'center' }}>
             Quý IV không ban hành Quyết định xếp loại riêng (Hướng dẫn 05-HD/TU)
           </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 640, mx: 'auto', mb: 3 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 640, mx: 'auto', mb: 3, textAlign: 'center' }}>
             Theo quy định của Ban Tổ chức Tỉnh ủy, Quý IV là giai đoạn nước rút hoàn thành các nhiệm vụ cả năm. Hệ thống không tạo
             quyết định xếp loại riêng cho Quý IV mà toàn bộ kết quả công việc Quý IV được tích lũy vào đợt{' '}
             <strong>Tổng kết Đánh giá & Xếp loại Cả Năm</strong>.
           </Typography>
-          <Stack direction="row" spacing={2} justifyContent="center">
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 2, width: '100%', mt: 2 }}>
             <Button
               variant="contained"
               color="primary"
@@ -375,7 +393,7 @@ export default function AgencyApprovalView() {
             >
               Xem Quý III / 2026 (Đã phê duyệt)
             </Button>
-          </Stack>
+          </Box>
         </Card>
       ) : !hasPeriodData ? (
         <Card variant="outlined" sx={{ borderRadius: 2, p: 6, textAlign: 'center', bgcolor: 'background.paper' }}>
@@ -397,6 +415,40 @@ export default function AgencyApprovalView() {
         </Card>
       ) : (
         <>
+          {/* Thông báo quy định nghiệp vụ Quý IV (Hướng dẫn 05-HD/TU) */}
+          {isQ4 && (
+            <Alert
+              severity="info"
+              variant="outlined"
+              icon={<InfoOutlinedIcon />}
+              sx={{
+                mb: 3,
+                borderRadius: 2,
+                bgcolor: (theme) =>
+                  theme.palette.mode === 'dark' ? 'rgba(2, 136, 209, 0.08)' : '#e1f5fe',
+                borderColor: 'info.main',
+              }}
+              action={
+                <Button
+                  color="info"
+                  size="small"
+                  variant="contained"
+                  onClick={() => setSelectedPeriod('YEAR_2026')}
+                  sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1.5, mr: 1, whiteSpace: 'nowrap' }}
+                >
+                  Chuyển sang Cả Năm 2026
+                </Button>
+              }
+            >
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                Quy định nghiệp vụ:
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                Quý IV <strong>không ban hành Quyết định xếp loại riêng biệt</strong>. Toàn bộ tiến độ và khối lượng công việc Quý IV được tích lũy trực tiếp vào đợt <strong>Tổng kết Đánh giá Cả Năm</strong>. Hội đồng thẩm định và Lãnh đạo Ban sẽ họp xét và phê duyệt kết quả chính thức tại kỳ <strong>Cả Năm</strong>.
+              </Typography>
+            </Alert>
+          )}
+
           {/* Official Approval Seal Status Card */}
           {currentApproval.isApproved ? (
             <Card
@@ -446,6 +498,45 @@ export default function AgencyApprovalView() {
                 </Button>
               </Stack>
             </Card>
+          ) : isQ4 ? (
+            <Card
+              variant="outlined"
+              sx={{
+                mb: 3,
+                borderRadius: 2,
+                p: 2.5,
+                bgcolor: (theme) =>
+                  theme.palette.mode === 'dark' ? 'rgba(2, 136, 209, 0.08)' : '#f0f9ff',
+                borderColor: 'info.main',
+              }}
+            >
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'flex-start', md: 'center' }}
+                spacing={2}
+              >
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'info.main' }}>
+                    Quy chế Quý IV: Tích lũy kết quả vào đợt Tổng kết Cả Năm
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Theo Hướng dẫn 05-HD/TU, Quý IV không phê duyệt riêng biệt mà chuyển tiếp toàn bộ số liệu sang đợt Tổng kết Đánh giá Cả Năm.
+                  </Typography>
+                </Box>
+
+                <Button
+                  variant="contained"
+                  color="info"
+                  size="large"
+                  startIcon={<AutoStoriesRoundedIcon />}
+                  onClick={() => setSelectedPeriod('YEAR_2026')}
+                  sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 3, whiteSpace: 'nowrap' }}
+                >
+                  Chuyển sang Thẩm định Cả Năm 2026
+                </Button>
+              </Stack>
+            </Card>
           ) : (
             <Card
               variant="outlined"
@@ -473,7 +564,9 @@ export default function AgencyApprovalView() {
 
                 <Tooltip
                   title={
-                    canApprove
+                    !isAgencyHead
+                      ? 'Chỉ Trưởng ban / Chủ tịch Hội đồng mới có thẩm quyền ký và ban hành Quyết định toàn cơ quan'
+                      : canApprove
                       ? 'Phê duyệt chính thức và đóng kỳ đánh giá'
                       : 'Bạn phải là Lãnh đạo Ban hoặc Quản trị viên để thực hiện hành động này'
                   }
@@ -483,7 +576,7 @@ export default function AgencyApprovalView() {
                       variant="contained"
                       color="error"
                       size="large"
-                      disabled={!canApprove}
+                      disabled={!canApprove || !isAgencyHead}
                       startIcon={<GavelRoundedIcon />}
                       onClick={handleOpenApprove}
                       sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 3 }}
@@ -751,7 +844,7 @@ export default function AgencyApprovalView() {
             fullWidth
             multiline
             rows={4}
-            label="Kết luận thẩm định của Hội đồng và Ban Giám đốc"
+            label="Kết luận thẩm định của Hội đồng đánh giá cấp Ban"
             value={approveDialog.councilNote}
             onChange={(e) => setApproveDialog((prev) => ({ ...prev, councilNote: e.target.value }))}
             placeholder="Nêu rõ kết luận phê duyệt xếp loại cho các tập thể phòng và cá nhân công chức..."

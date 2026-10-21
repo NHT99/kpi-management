@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -34,9 +34,6 @@ import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import { getCurrentQuarterInfo } from '../utils/quarterHelper';
-
-const currentQuarterInfo = getCurrentQuarterInfo();
 const EVALUATION_PERIODS = [
   { value: 'Q1_2026', label: 'Quý I / 2026' },
   { value: 'Q2_2026', label: 'Quý II / 2026' },
@@ -57,16 +54,18 @@ export default function DocumentGeneratorModal({
   const [period, setPeriod] = useState(initialPeriod);
 
   // Sync state whenever modal is opened
-  useEffect(() => {
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       if (initialPeriod) setPeriod(initialPeriod);
       if (initialDocType) setSelectedDocType(initialDocType);
     }
-  }, [open, initialPeriod, initialDocType]);
+  }
 
   // Ngày tháng hiện tại theo chuẩn hành chính
-  const today = new Date();
   const currentDateFormatted = useMemo(() => {
+    const today = new Date();
     const day = today.getDate();
     const month = today.getMonth() + 1;
     const year = today.getFullYear();

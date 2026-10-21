@@ -8,7 +8,7 @@ import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import { gray, brand } from '../themePrimitives';
 
-/* eslint-disable import/prefer-default-export */
+ 
 export const inputsCustomizations = {
   MuiButtonBase: {
     defaultProps: {
@@ -461,7 +461,21 @@ export const inputsCustomizations = {
         ...theme.applyStyles('dark', {
           color: (theme.vars || theme).palette.grey[400],
         }),
+        '& .MuiIconButton-root': {
+          border: 'none',
+          backgroundColor: 'transparent',
+          boxShadow: 'none',
+          width: 'auto',
+          height: 'auto',
+          padding: 4,
+          '&:hover': {
+            backgroundColor: 'transparent',
+          },
+        },
       }),
+      positionEnd: {
+        marginRight: -4,
+      },
     },
   },
   MuiFormLabel: {
@@ -470,6 +484,37 @@ export const inputsCustomizations = {
         typography: theme.typography.caption,
         marginBottom: 8,
       }),
+    },
+  },
+  MuiAutocomplete: {
+    styleOverrides: {
+      popupIndicator: {
+        border: 'none',
+        backgroundColor: 'transparent',
+        boxShadow: 'none',
+        width: 'auto',
+        height: 'auto',
+        padding: 4,
+        color: 'inherit',
+        '&:hover': {
+          backgroundColor: 'transparent',
+        },
+      },
+      clearIndicator: {
+        border: 'none',
+        backgroundColor: 'transparent',
+        boxShadow: 'none',
+        width: 'auto',
+        height: 'auto',
+        padding: 4,
+        color: 'inherit',
+        '&:hover': {
+          backgroundColor: 'transparent',
+        },
+      },
+      endAdornment: {
+        right: 8,
+      },
     },
   },
 };

@@ -27,10 +27,21 @@ export function useToast() {
     setToast((prev) => ({ ...prev, open: false }));
   };
 
+  // Tự động tắt sau đúng 5 giây trong mọi trường hợp (kể cả khi mở dialog In/PDF hoặc chuyển tab)
+  useEffect(() => {
+    if (toast.open) {
+      const timer = setTimeout(() => {
+        setToast((prev) => ({ ...prev, open: false }));
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast.open, toast.message]);
+
   const ToastComponent = (
     <Snackbar
       open={toast.open}
-      autoHideDuration={10000} // 10 seconds
+      autoHideDuration={5000} // 5 seconds
+      disableWindowBlurListener={true} // Không tạm dừng timer khi mất focus hoặc mở hộp thoại in
       onClose={handleClose}
       anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
       sx={{ mt: 7 }}

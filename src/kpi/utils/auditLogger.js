@@ -50,7 +50,7 @@ export const INITIAL_AUDIT_LOGS = [
       name: 'Lê Hoàng Long',
       role: 'BAN_LEADER',
       email: 'long.lehoang@kpi.gov.vn',
-      deptName: 'Ban Giám đốc & Hội đồng',
+      deptName: 'Lãnh đạo Ban',
     },
     actionType: 'Giao nhiệm vụ kỳ',
     details: 'Giao nhiệm vụ trọng tâm Quý IV/2026 cho Phòng Tổ chức đảng - Đảng viên: Chỉ tiêu 120 hồ sơ kết nạp Đảng.',

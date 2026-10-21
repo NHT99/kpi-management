@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -32,6 +32,7 @@ import RadioGroup from '@mui/material/RadioGroup';
 import FormControl from '@mui/material/FormControl';
 import FormLabel from '@mui/material/FormLabel';
 import Divider from '@mui/material/Divider';
+import Autocomplete from '@mui/material/Autocomplete';
 
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
@@ -46,18 +47,16 @@ import RuleRoundedIcon from '@mui/icons-material/RuleRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 
-import { useKPI } from '../KPIContext';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
-import { ROLES } from '../../rbac/roles';
+import { ROLES, isTrueDeptHead, isDeputyDeptHead, isSameDept, getDirectSupervisorForStaff, getOkrDept, getEffectiveManagedDeptId } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useToast } from '../hooks/useToast';
-import { INITIAL_ASSIGNED_TASKS, INITIAL_OKRS, INITIAL_MASTER_KPIS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
-import { INITIAL_STAFFS } from '../data/organizationData';
+import { INITIAL_ASSIGNED_TASKS, INITIAL_OKRS, INITIAL_MASTER_KPIS, INITIAL_EVALUATIONS, KPI_DATA_VERSION } from '../data/mockKPIData';
+import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 import {
-  calculateTaskScore,
-  calculateTotalKPIScore,
   calculateQuarterlyKPI,
   calculateYearlyKPI,
   determineGrade,
@@ -65,38 +64,37 @@ import {
   checkYearlyGradeCap,
 } from '../utils/scoringEngine';
 import { logAction } from '../utils/auditLogger';
-import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isQuarterInPast, normalizePeriodAndQuarter } from '../utils/quarterHelper';
 import {
   isQuarterEligibleForSeparateDecision,
-  getQuarterWorkflowNotice,
   getStaffQuarterlyEvaluations,
-  calculateQuarterlyAverage,
 } from '../utils/yearWorkflowHelper';
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export default function PersonalKPIView() {
   const { currentUser, role, roleDetails, hasPermission } = useAuth();
   const [storedTasks, setAssignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
   const assignedTasks = useMemo(() => {
-    const list = storedTasks && Array.isArray(storedTasks) ? [...storedTasks] : [];
-    INITIAL_ASSIGNED_TASKS.forEach((initTask) => {
-      if (!list.some((t) => t.id === initTask.id)) {
-        list.push(initTask);
-      }
-    });
-    return list;
+    return storedTasks && Array.isArray(storedTasks) ? storedTasks : INITIAL_ASSIGNED_TASKS;
   }, [storedTasks]);
 
   const [storedEvaluations, setStoredEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
   const evaluations = useMemo(() => {
-    const list = storedEvaluations && Array.isArray(storedEvaluations) ? [...storedEvaluations] : [];
-    INITIAL_EVALUATIONS.forEach((initEval) => {
-      if (!list.some((e) => e.staffId === initEval.staffId && e.period === initEval.period)) {
-        list.push(initEval);
-      }
-    });
-    return list;
+    return storedEvaluations && Array.isArray(storedEvaluations) ? storedEvaluations : INITIAL_EVALUATIONS;
   }, [storedEvaluations]);
 
+  // Đồng bộ phiên bản init data
+  useEffect(() => {
+    const savedVer = localStorage.getItem('kpi_data_version');
+    if (savedVer !== KPI_DATA_VERSION) {
+      setAssignedTasks(INITIAL_ASSIGNED_TASKS);
+      setStoredEvaluations(INITIAL_EVALUATIONS);
+      localStorage.setItem('kpi_data_version', KPI_DATA_VERSION);
+    }
+  }, [setAssignedTasks, setStoredEvaluations]);
+
+  const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [okrs] = useLocalStorage('kpi_okr_list', INITIAL_OKRS);
   const [masterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
@@ -112,7 +110,7 @@ export default function PersonalKPIView() {
       ...quarters.map((q) => {
         let tag = '';
         if (q.isCurrent) tag = ' (Hiện tại)';
-        else if (q.isPast) tag = ' (Đã duyệt)';
+        else if (q.isPast) tag = ' (Đã kết thúc)';
         else if (q.isFuture) tag = ' (Chưa diễn ra)';
         return {
           ...q,
@@ -134,8 +132,13 @@ export default function PersonalKPIView() {
   const isQ4 = !isQuarterEligibleForSeparateDecision(selectedPeriod);
 
   // Trục D: Đánh giá Năng lực Lãnh đạo (Chỉ áp dụng cho DEPT_LEADER & BAN_LEADER)
-  const [d2Score, setD2Score] = useState(100); // D2 (Triển khai): 100% hoặc 50%
-  const [d3Score, setD3Score] = useState(100); // D3 (Đoàn kết): 100% hoặc 50%
+  const [userD2Score, setUserD2Score] = useState(100); // D2 (Triển khai): 100% hoặc 50%
+  const [userD3Score, setUserD3Score] = useState(100); // D3 (Đoàn kết): 100% hoặc 50%
+
+  // Người phê duyệt trực tiếp của người dùng hiện tại (100% động theo phòng ban & chức vụ)
+  const currentSupervisor = useMemo(() => {
+    return getDirectSupervisorForStaff(currentUser, currentUser, departments, staffs);
+  }, [currentUser, departments, staffs]);
 
   // Lấy danh sách cấp dưới trực tiếp để tính D1
   const subordinates = useMemo(() => {
@@ -167,7 +170,7 @@ export default function PersonalKPIView() {
   }, [isLeader, subordinates, evaluations, selectedPeriod]);
 
   // Đồng bộ hệ số quy đổi (multiplier) với ngân hàng KPI gốc (Master KPI Catalog)
-  const getTaskMultiplier = (task) => {
+  const getTaskMultiplier = useCallback((task) => {
     if (!task) return 1.0;
     // 1. Tìm trong Master KPI Catalog theo mã masterCode
     if (task.masterCode) {
@@ -185,18 +188,10 @@ export default function PersonalKPIView() {
       return Number(task.conversionFactor);
     }
     return 1.0;
-  };
+  }, [masterKPIs]);
 
-  // Helper tính trạng thái thực tế: 'Mới tạo' / 'Mới giao' sau 1 tiếng (3600000 ms) chuyển thành "Đang tiến hành"
-  const ONE_HOUR_MS = 60 * 60 * 1000;
+  // Helper tính trạng thái thực tế
   const getEffectiveTaskStatus = (task) => {
-    if (task.status === 'Mới tạo' || task.status === 'Mới giao') {
-      const createdTime = typeof task.createdAt === 'number' ? task.createdAt : new Date(task.createdAt || 0).getTime();
-      if (createdTime && Date.now() - createdTime >= ONE_HOUR_MS) {
-        return 'Đang tiến hành';
-      }
-      return task.status;
-    }
     return task.status || 'Đang tiến hành';
   };
 
@@ -234,7 +229,7 @@ export default function PersonalKPIView() {
   };
 
   // Helper lấy kỳ của nhiệm vụ (Quarter Key dạng 'Q4_2026', 'Q3_2026'...)
-  const getTaskPeriod = (task) => {
+  const getTaskPeriod = useCallback((task) => {
     if (task.period) return task.period;
     if (task.quarter) {
       const match = task.quarter.match(/Quý\s+(I|II|III|IV)\/(\d{4})/i);
@@ -252,25 +247,20 @@ export default function PersonalKPIView() {
       }
     }
     return currentQuarterInfo.periodKey;
-  };
+  }, [currentQuarterInfo.periodKey]);
 
   // Lọc nhiệm vụ thuộc người dùng hiện tại và theo kỳ được chọn (data thật)
-  // Lưu ý: Nhiệm vụ với trạng thái 'Chờ duyệt' thì KHÔNG xuất hiện trong bảng và không tính điểm
+  // Bao gồm cả nhiệm vụ 'Chờ duyệt' (vẫn hiển thị trong bảng nhưng khóa cập nhật tiến độ)
   const userAssignedTasks = useMemo(() => {
+    const normSelected = normalizePeriodAndQuarter(selectedPeriod);
     return assignedTasks
       .filter((t) => t.staffName === currentUser.name || t.staffId === currentUser.id)
       .filter((t) => {
-        // Nhiệm vụ chờ duyệt không xuất hiện trong Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế
-        if (t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt') {
-          return false;
+        const taskNorm = normalizePeriodAndQuarter(t.period || t.quarter || t.deadline);
+        if (normSelected.isYear) {
+          return taskNorm.year === normSelected.year;
         }
-
-        if (selectedPeriodObj?.isYear) {
-          // Cả năm: hiển thị tất cả nhiệm vụ trong năm
-          const taskPeriod = getTaskPeriod(t);
-          return taskPeriod.endsWith(`_${currentQuarterInfo.year}`) || !taskPeriod;
-        }
-        return getTaskPeriod(t) === selectedPeriod;
+        return taskNorm.periodKey === normSelected.periodKey;
       })
       .map((t) => {
         const mult = getTaskMultiplier(t);
@@ -280,7 +270,7 @@ export default function PersonalKPIView() {
           conversionFactor: mult,
         };
       });
-  }, [assignedTasks, currentUser, masterKPIs, selectedPeriod, selectedPeriodObj, currentQuarterInfo]);
+  }, [assignedTasks, currentUser, selectedPeriod, getTaskMultiplier]);
 
   const hasNoTasks = userAssignedTasks.length === 0;
 
@@ -294,8 +284,8 @@ export default function PersonalKPIView() {
 
   const isSubmitted = Boolean(currentPeriodEval);
   const isApproved = currentPeriodEval?.status === 'APPROVED';
-  // Đồng bộ trạng thái đã duyệt: Chỉ tính là đã duyệt nếu CÓ nhiệm vụ thực tế và (được duyệt HOẶC là quý quá khứ có kết quả thực)
-  const isEffectivelyApproved = Boolean(!hasNoTasks && (isApproved || isPastQuarter));
+  // Đồng bộ trạng thái đã duyệt: Chỉ tính là đã duyệt nếu CÓ nhiệm vụ thực tế và hồ sơ thực sự có status === 'APPROVED'
+  const isEffectivelyApproved = Boolean(!hasNoTasks && isApproved);
 
   // Lấy kết quả 4 Quý trong năm của cán bộ để phục vụ tính Cả Năm và kiểm tra điều kiện khống chế loại
   const userQuarterlyEvals = useMemo(() => {
@@ -307,20 +297,11 @@ export default function PersonalKPIView() {
     return checkYearlyGradeCap(userQuarterlyEvals);
   }, [userQuarterlyEvals]);
 
-  // Đồng bộ Trục D (D2, D3) khi xem lại kỳ đã đánh giá hoặc chuyển kỳ
-  useEffect(() => {
-    if (currentPeriodEval?.kpiBreakdown) {
-      if (currentPeriodEval.kpiBreakdown.d2 !== undefined) {
-        setD2Score(Number(currentPeriodEval.kpiBreakdown.d2));
-      }
-      if (currentPeriodEval.kpiBreakdown.d3 !== undefined) {
-        setD3Score(Number(currentPeriodEval.kpiBreakdown.d3));
-      }
-    } else {
-      setD2Score(100);
-      setD3Score(100);
-    }
-  }, [currentPeriodEval]);
+  // Đồng bộ Trục D (D2, D3): lấy từ hồ sơ đánh giá đã lưu nếu có, ngược lại dùng giá trị người dùng chọn
+  const d2Score = currentPeriodEval?.kpiBreakdown?.d2 !== undefined ? Number(currentPeriodEval.kpiBreakdown.d2) : userD2Score;
+  const d3Score = currentPeriodEval?.kpiBreakdown?.d3 !== undefined ? Number(currentPeriodEval.kpiBreakdown.d3) : userD3Score;
+  const setD2Score = setUserD2Score;
+  const setD3Score = setUserD3Score;
 
   // Nhãn động cho nút Gửi đánh giá theo kỳ được chọn (Quý hoặc Năm)
   let dynamicSubmitButtonLabel = isYear
@@ -399,8 +380,30 @@ export default function PersonalKPIView() {
     targetQty: 10,
     unit: 'Hồ sơ',
     deadline: '2026-12-31',
-    okrId: okrs[0]?.id || '',
+    okrId: '',
+    masterCode: '',
+    multiplier: 1.0,
   });
+
+  const handleMasterKPIChangeInPropose = (code) => {
+    const found = masterKPIs.find((m) => m.code === code);
+    if (found) {
+      const factor = Number(found.conversionFactor ?? found.multiplier ?? 1.0);
+      setProposeForm((prev) => ({
+        ...prev,
+        masterCode: code,
+        taskName: found.title,
+        outputProduct: found.outputProduct || prev.outputProduct,
+        multiplier: factor,
+      }));
+    } else {
+      setProposeForm((prev) => ({
+        ...prev,
+        masterCode: '',
+        multiplier: 1.0,
+      }));
+    }
+  };
 
   // Progress Update Dialog State (Chuẩn theo 4 trục A, B, C)
   const [progressDialog, setProgressDialog] = useState({
@@ -419,6 +422,14 @@ export default function PersonalKPIView() {
 
   // Mở modal cập nhật tiến độ
   const handleOpenProgress = (task) => {
+    if (task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt') {
+      showToast('Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ!', 'warning');
+      return;
+    }
+    if (isPastQuarter || isQuarterInPast(task.period)) {
+      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+      return;
+    }
     const today = new Date().toISOString().split('T')[0];
     const actualQty = task.actualQty !== undefined
       ? task.actualQty
@@ -442,6 +453,10 @@ export default function PersonalKPIView() {
   // Lưu tiến độ task
   const handleSaveProgress = () => {
     if (!progressDialog.task) return;
+    if (isPastQuarter || isQuarterInPast(progressDialog.task.period)) {
+      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+      return;
+    }
     const taskId = progressDialog.task.id;
     const actQty = Math.max(0, Number(progressDialog.actualQty) || 0);
     const targetQty = Number(progressDialog.task.targetQty) || 1;
@@ -596,38 +611,48 @@ export default function PersonalKPIView() {
 
   // Propose / Self-create Task Handler
   const handleSavePropose = () => {
+    const taskDeadline = proposeForm.deadline || new Date().toISOString().split('T')[0];
+    const norm = normalizePeriodAndQuarter(selectedPeriod.startsWith('YEAR_') ? currentQuarterInfo.periodKey : selectedPeriod);
+
+    if (isPastQuarter || isQuarterInPast(norm.periodKey)) {
+      showToast('Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới!', 'warning');
+      return;
+    }
+
     if (!proposeForm.taskName || !proposeForm.outputProduct) {
       showToast('Vui lòng điền đầy đủ Tên nhiệm vụ và Sản phẩm đầu ra!', 'error');
       return;
     }
 
-    const isBanLeader = role === ROLES.BAN_LEADER;
-    const taskDeadline = proposeForm.deadline || new Date().toISOString().split('T')[0];
-    const taskPeriod = selectedPeriod.startsWith('YEAR_') ? currentQuarterInfo.periodKey : selectedPeriod;
+    // Xác định người duyệt theo phân cấp chuẩn (100% động theo phòng ban & chức vụ, tuyệt đối không gán cứng tên ai):
+    const assignedApprover = getDirectSupervisorForStaff(currentUser, currentUser, departments, staffs);
 
     const newProposedTask = {
       id: `task-prop-${Date.now()}`,
       taskName: proposeForm.taskName,
       staffId: currentUser.id,
       staffName: currentUser.name,
-      staffDept: currentUser.department || currentUser.title || (isBanLeader ? 'Lãnh đạo Ban Giám đốc' : 'Phòng chuyên môn'),
-      masterCode: 'PROP.01',
+      deptId: currentUser.deptId,
+      staffDept: currentUser.department || currentUser.title || (isBanLeader ? 'Lãnh đạo Ban' : 'Phòng chuyên môn'),
+      masterCode: proposeForm.masterCode || 'PROP.01',
       outputProduct: proposeForm.outputProduct,
       targetQty: Number(proposeForm.targetQty) || 1,
       unit: proposeForm.unit,
       startDate: new Date().toISOString().split('T')[0],
       deadline: taskDeadline,
-      period: taskPeriod,
+      period: norm.periodKey,
+      quarter: norm.quarterDisplay,
       type: proposeForm.okrId ? 'OKR' : (isBanLeader ? 'Trọng tâm Lãnh đạo' : 'Thường xuyên VTVL'),
-      okrId: proposeForm.okrId,
+      okrId: proposeForm.okrId || null,
       status: isBanLeader ? 'Mới tạo' : 'Chờ duyệt',
       currentValue: 0,
       actualQty: 0,
       progress: 0,
       approvalStatus: isBanLeader ? 'Đã duyệt' : 'Chờ duyệt',
-      approverName: isBanLeader ? 'Tự đăng ký (Lãnh đạo Ban)' : 'Trưởng phòng',
-      multiplier: 1,
-      conversionFactor: 1,
+      isSelfAssigned: true,
+      approverName: assignedApprover,
+      multiplier: Number(proposeForm.multiplier) || 1.0,
+      conversionFactor: Number(proposeForm.multiplier) || 1.0,
       reworkCount: 0,
       lateCount: 0,
       isObjectiveLate: false,
@@ -638,7 +663,7 @@ export default function PersonalKPIView() {
           actor: currentUser.name,
           role: role,
           action: isBanLeader ? 'Khởi tạo nhiệm vụ Lãnh đạo' : 'Đề xuất nhiệm vụ mới',
-          note: `Khởi tạo: Chỉ tiêu ${proposeForm.targetQty} ${proposeForm.unit}.`
+          note: `Khởi tạo: Chỉ tiêu ${proposeForm.targetQty} ${proposeForm.unit}. Hệ số quy đổi: x${proposeForm.multiplier || 1.0}. Người duyệt: ${assignedApprover}`
         }
       ]
     };
@@ -652,7 +677,12 @@ export default function PersonalKPIView() {
       'KPI Cá nhân'
     );
 
-    showToast(isBanLeader ? 'Đã tạo nhiệm vụ thành công!' : 'Đã gửi đề xuất nhiệm vụ đến Trưởng phòng duyệt!', 'success');
+    showToast(
+      isBanLeader
+        ? 'Đã tạo nhiệm vụ thành công!'
+        : `Đã gửi đề xuất nhiệm vụ đến ${assignedApprover} duyệt!`,
+      'success'
+    );
     setProposeDialogOpen(false);
     setProposeForm({
       taskName: '',
@@ -720,16 +750,27 @@ export default function PersonalKPIView() {
                 justifyContent: { xs: 'flex-start', md: 'flex-end' },
               }}
             >
-              <Button
-                variant="outlined"
-                color="primary"
-                size="small"
-                startIcon={<AddRoundedIcon />}
-                onClick={() => setProposeDialogOpen(true)}
-                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5, whiteSpace: 'nowrap' }}
+              <Tooltip
+                title={
+                  isPastQuarter
+                    ? 'Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới'
+                    : ''
+                }
               >
-                {role === ROLES.BAN_LEADER ? 'Tự tạo KPI cá nhân' : 'Đề xuất nhiệm vụ mới'}
-              </Button>
+                <span>
+                  <Button
+                    variant="outlined"
+                    color="primary"
+                    size="small"
+                    startIcon={<AddRoundedIcon />}
+                    onClick={() => setProposeDialogOpen(true)}
+                    disabled={isPastQuarter}
+                    sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5, whiteSpace: 'nowrap' }}
+                  >
+                    {role === ROLES.BAN_LEADER ? 'Tự tạo KPI cá nhân' : 'Đề xuất nhiệm vụ mới'}
+                  </Button>
+                </span>
+              </Tooltip>
               {isQ4 ? (
                 <Tooltip
                   title="Theo Hướng dẫn 05-HD/TU: Quý IV không gửi bản đánh giá riêng biệt mà tích lũy vào Cả Năm. Nhấn để chuyển sang đợt Đánh giá Cả Năm."
@@ -803,7 +844,7 @@ export default function PersonalKPIView() {
           }
         >
           <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-            Quy định nghiệp vụ Hướng dẫn 05-HD/TU (Ban Tổ chức Tỉnh ủy):
+            Quy định nghiệp vụ:
           </Typography>
           <Typography variant="body2" sx={{ mt: 0.5 }}>
             Quý IV không ban hành Quyết định xếp loại riêng biệt. Toàn bộ tiến độ và khối lượng công việc Quý IV được tích lũy trực tiếp vào đợt <strong>Tổng kết Đánh giá Cả Năm</strong>.
@@ -1054,7 +1095,7 @@ export default function PersonalKPIView() {
               <Stack direction="row" spacing={1.2} alignItems="center">
                 <SupervisorAccountRoundedIcon color="primary" sx={{ fontSize: 24 }} />
                 <Typography variant="subtitle1" sx={{ fontWeight: 700, color: 'primary.dark', lineHeight: 1.3 }}>
-                  Đánh giá Năng lực Lãnh đạo & Quản lý điều hành (Trục D)
+                  Đánh giá Năng lực Lãnh đạo & Quản lý điều hành
                 </Typography>
               </Stack>
               <Chip
@@ -1102,18 +1143,18 @@ export default function PersonalKPIView() {
                   <FormControl component="fieldset" sx={{ mt: 1, width: '100%' }}>
                     <RadioGroup
                       value={d2Score}
-                      onChange={(e) => !(isPastQuarter || isApproved) && setD2Score(Number(e.target.value))}
+                      onChange={(e) => !isApproved && setD2Score(Number(e.target.value))}
                     >
                       <FormControlLabel
                         value={100}
                         control={<Radio size="small" />}
-                        disabled={isPastQuarter || isApproved}
+                        disabled={isApproved}
                         label={<Typography variant="body2" sx={{ fontWeight: 600 }}>100% - Đạt yêu cầu / Có sáng kiến</Typography>}
                       />
                       <FormControlLabel
                         value={50}
                         control={<Radio size="small" />}
-                        disabled={isPastQuarter || isApproved}
+                        disabled={isApproved}
                         label={<Typography variant="body2" sx={{ fontWeight: 600 }}>50% - Chậm trễ kéo dài</Typography>}
                       />
                     </RadioGroup>
@@ -1130,18 +1171,18 @@ export default function PersonalKPIView() {
                   <FormControl component="fieldset" sx={{ mt: 1, width: '100%' }}>
                     <RadioGroup
                       value={d3Score}
-                      onChange={(e) => !(isPastQuarter || isApproved) && setD3Score(Number(e.target.value))}
+                      onChange={(e) => !isApproved && setD3Score(Number(e.target.value))}
                     >
                       <FormControlLabel
                         value={100}
                         control={<Radio size="small" />}
-                        disabled={isPastQuarter || isApproved}
+                        disabled={isApproved}
                         label={<Typography variant="body2" sx={{ fontWeight: 600 }}>100% - Duy trì môi trường đoàn kết</Typography>}
                       />
                       <FormControlLabel
                         value={50}
                         control={<Radio size="small" />}
-                        disabled={isPastQuarter || isApproved}
+                        disabled={isApproved}
                         label={<Typography variant="body2" sx={{ fontWeight: 600 }}>50% - Phát sinh mâu thuẫn kéo dài</Typography>}
                       />
                     </RadioGroup>
@@ -1339,15 +1380,29 @@ export default function PersonalKPIView() {
                         })()}
                       </TableCell>
                       <TableCell align="right">
-                        <IconButton
-                          size="small"
-                          color="primary"
-                          disabled={!canUpdate || isPastQuarter}
-                          onClick={() => handleOpenProgress(t)}
-                          title={isPastQuarter ? 'Kỳ đánh giá này đã được duyệt và đóng' : 'Cập nhật tiến độ & khối lượng thực tế'}
-                        >
-                          <EditRoundedIcon fontSize="small" />
-                        </IconButton>
+                        {(() => {
+                          const isPending = t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt';
+                          const disabled = !canUpdate || isApproved || isPending;
+                          const tooltipTitle = isPending
+                            ? 'Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ'
+                            : isApproved
+                            ? 'Kỳ đánh giá này đã được chốt và phê duyệt chính thức'
+                            : 'Cập nhật tiến độ & khối lượng thực tế';
+                          return (
+                            <Tooltip title={tooltipTitle} arrow placement="top">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  disabled={disabled}
+                                  onClick={() => handleOpenProgress(t)}
+                                >
+                                  <EditRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          );
+                        })()}
                       </TableCell>
                     </TableRow>
                   );
@@ -1518,8 +1573,10 @@ export default function PersonalKPIView() {
         fullWidth
       >
         <DialogTitle sx={{ fontWeight: 700 }}>
-          {isApproved || isPastQuarter
+          {isApproved
             ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - Đã duyệt`
+            : isSubmitted
+            ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - ${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'}`
             : `Gửi Đánh giá ${isYear ? 'Năm' : 'Quý'} (${selectedPeriodDisplay}) & Tự chấm 30đ Phẩm chất`}
         </DialogTitle>
         <DialogContent dividers>
@@ -1534,7 +1591,7 @@ export default function PersonalKPIView() {
                   Cơ quan: Ban Tổ chức Tỉnh ủy • Kỳ đánh giá: {selectedPeriodDisplay}
                 </Typography>
               </Box>
-              {(isApproved || isPastQuarter) && (
+              {isApproved ? (
                 <Chip
                   icon={<CheckCircleRoundedIcon />}
                   label={`Đã duyệt (${currentPeriodEval?.approverName || 'Lãnh đạo Ban'})`}
@@ -1542,7 +1599,14 @@ export default function PersonalKPIView() {
                   size="small"
                   sx={{ fontWeight: 700 }}
                 />
-              )}
+              ) : isSubmitted ? (
+                <Chip
+                  label={currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ cấp trên duyệt'}
+                  color="info"
+                  size="small"
+                  sx={{ fontWeight: 700 }}
+                />
+              ) : null}
             </Stack>
           </Box>
 
@@ -1641,7 +1705,7 @@ export default function PersonalKPIView() {
             step={0.5}
             min={0}
             max={30}
-            disabled={isApproved || isPastQuarter}
+            disabled={isApproved}
             marks={[
               { value: 0, label: '0đ' },
               { value: 15, label: '15đ' },
@@ -1763,7 +1827,7 @@ export default function PersonalKPIView() {
             fullWidth
             multiline
             rows={3}
-            disabled={isApproved || isPastQuarter}
+            disabled={isApproved}
             label={`Bản tự kiểm điểm, nhận xét kết quả công tác trong ${isYear ? 'năm' : 'quý'}`}
             value={selfComment}
             onChange={(e) => setSelfComment(e.target.value)}
@@ -1771,7 +1835,7 @@ export default function PersonalKPIView() {
           />
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
-          {isApproved || isPastQuarter ? (
+          {isApproved ? (
             <Button
               onClick={() => setSelfEvalModalOpen(false)}
               variant="contained"
@@ -1791,7 +1855,7 @@ export default function PersonalKPIView() {
                 color="secondary"
                 sx={{ textTransform: 'none', fontWeight: 700, color: '#fff' }}
               >
-                Xác nhận Gửi đánh giá {isYear ? 'Năm' : 'Quý'}
+                {isSubmitted ? `Cập nhật & Gửi lại đánh giá ${isYear ? 'Năm' : 'Quý'}` : `Xác nhận Gửi đánh giá ${isYear ? 'Năm' : 'Quý'}`}
               </Button>
             </>
           )}
@@ -1799,7 +1863,7 @@ export default function PersonalKPIView() {
       </Dialog>
 
       {/* Modal: Đề xuất / Tự tạo nhiệm vụ mới */}
-      <Dialog open={proposeDialogOpen} onClose={() => setProposeDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog open={proposeDialogOpen} onClose={() => setProposeDialogOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {role === ROLES.BAN_LEADER ? 'Tự tạo Nhiệm vụ & KPI cá nhân (Lãnh đạo Ban)' : 'Đề xuất Nhiệm vụ & KPI cá nhân mới'}
         </DialogTitle>
@@ -1809,13 +1873,243 @@ export default function PersonalKPIView() {
               Nhiệm vụ cá nhân do Lãnh đạo Ban tự tạo sẽ có trạng thái ban đầu là <strong>&quot;Mới tạo&quot;</strong>. Sau 1 giờ, hệ thống sẽ tự động chuyển sang <strong>&quot;Đang tiến hành&quot;</strong>. Khi cập nhật tiến độ khối lượng thực tế, trạng thái sẽ là <strong>&quot;Đang tiến hành&quot;</strong>.
             </Alert>
           )}
+
+          {role !== ROLES.BAN_LEADER && (
+            <TextField
+              fullWidth
+              label="Người phê duyệt (Cấp trên trực tiếp)"
+              InputLabelProps={{ shrink: true }}
+              value={currentSupervisor}
+              disabled
+              helperText="Hệ thống tự động gán người duyệt theo phân cấp quản lý trực tiếp của đơn vị"
+              sx={{ mb: 2 }}
+            />
+          )}
+
+          {/* 1. Gán vào Mục tiêu Trọng tâm (OKR) */}
+          <TextField
+            select
+            fullWidth
+            label="Gán vào Mục tiêu Trọng tâm (OKR)"
+            value={proposeForm.okrId || ''}
+            onChange={(e) => setProposeForm({ ...proposeForm, okrId: e.target.value })}
+            sx={{ mb: 2 }}
+            helperText="Liên kết nhiệm vụ với OKR chiến lược của đơn vị hoặc để trống nếu là nhiệm vụ thường xuyên"
+            SelectProps={{
+              MenuProps: {
+                PaperProps: {
+                  sx: {
+                    maxHeight: 320,
+                    maxWidth: { xs: '90vw', md: 800 },
+                  },
+                },
+              },
+            }}
+          >
+            <MenuItem value="">
+              <em>-- Không gán OKR (Nhiệm vụ Thường xuyên VTVL) --</em>
+            </MenuItem>
+            {okrs
+              .filter((o) => {
+                // 1. Phải là kỳ hiện tại hoặc tương lai (hoặc đúng OKR đang chọn)
+                const isQuarterValid = !isQuarterInPast(o.quarter) || o.id === proposeForm.okrId;
+                if (!isQuarterValid) return false;
+
+                // 2. Lọc theo phòng ban: Cán bộ phòng nào CHỈ ĐƯỢC CHỌN OKR của phòng đó!
+                if (role === ROLES.BAN_LEADER) {
+                  const effectiveManagedDept = getEffectiveManagedDeptId(currentUser, departments);
+                  if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+                    const okrDept = getOkrDept(o, departments, staffs, assignedTasks);
+                    return isSameDept(okrDept, effectiveManagedDept, departments) || o.id === proposeForm.okrId;
+                  }
+                  return true;
+                }
+
+                // Chuyên viên, Phó phòng, Trưởng phòng: BẮT BUỘC chỉ chọn OKR của phòng mình
+                const userDept = currentUser?.deptId || currentUser?.department;
+                if (!userDept) return true;
+                const okrDept = getOkrDept(o, departments, staffs, assignedTasks);
+                return isSameDept(okrDept, userDept, departments) || o.id === proposeForm.okrId;
+              })
+              .map((o) => (
+                <MenuItem key={o.id} value={o.id} sx={{ whiteSpace: 'normal', py: 1 }}>
+                  <Box>
+                    <Chip label={o.code} size="small" color="primary" sx={{ mr: 1, height: 20, fontWeight: 700, fontSize: '0.7rem' }} />
+                    <Typography component="span" variant="body2" sx={{ fontWeight: 600 }}>
+                      {o.title}
+                    </Typography>
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      ({o.quarter})
+                    </Typography>
+                  </Box>
+                </MenuItem>
+              ))}
+          </TextField>
+
+          {/* 2. Chọn Tiêu chí KPI mẫu (Ngân hàng gốc) - Dạng Autocomplete tìm kiếm thông minh */}
+          <Autocomplete
+            id="propose-master-kpi-select"
+            fullWidth
+            popupIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 22, color: 'text.secondary' }} />}
+            options={masterKPIs}
+            getOptionLabel={(option) => {
+              if (!option) return '';
+              if (typeof option === 'string') return option;
+              return `[${option.code}] ${option.title}`;
+            }}
+            value={masterKPIs.find((m) => m.code === proposeForm.masterCode) || null}
+            onChange={(_, newValue) => {
+              if (newValue && newValue.code) {
+                handleMasterKPIChangeInPropose(newValue.code);
+              } else {
+                handleMasterKPIChangeInPropose('');
+              }
+            }}
+            isOptionEqualToValue={(option, val) => option?.code === val?.code || option?.id === val?.id}
+            filterOptions={(options, { inputValue }) => {
+              const q = (inputValue || '').toLowerCase().trim();
+              if (!q) return options;
+              return options.filter((item) => {
+                const code = (item.code || '').toLowerCase();
+                const title = (item.title || '').toLowerCase();
+                const prod = (item.outputProduct || '').toLowerCase();
+                const comp = (item.complexity || '').toLowerCase();
+                return code.includes(q) || title.includes(q) || prod.includes(q) || comp.includes(q);
+              });
+            }}
+            noOptionsText="Không tìm thấy tiêu chí KPI phù hợp trong Ngân hàng gốc"
+            renderOption={(props, option) => {
+              const factor = option.conversionFactor || option.multiplier || 1.0;
+              return (
+                <Box
+                  component="li"
+                  {...props}
+                  key={option.id || option.code}
+                  sx={{
+                    py: 1.2,
+                    px: 1.5,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    '&:last-child': { borderBottom: 'none' },
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Box sx={{ width: '100%' }}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+                      <Chip
+                        label={option.code}
+                        size="small"
+                        color="primary"
+                        sx={{ fontWeight: 800, height: 22, fontSize: '0.72rem' }}
+                      />
+                      <Chip
+                        label={`Hệ số: x${factor}`}
+                        size="small"
+                        color="secondary"
+                        variant="outlined"
+                        sx={{ fontWeight: 700, height: 22, fontSize: '0.72rem' }}
+                      />
+                      {option.complexity && (
+                        <Chip
+                          label={`Độ phức tạp: ${option.complexity}`}
+                          size="small"
+                          variant="outlined"
+                          sx={{ height: 22, fontSize: '0.72rem', borderColor: 'divider', color: 'text.secondary' }}
+                        />
+                      )}
+                      {option.vtvlName && (
+                        <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic', ml: 0.5 }}>
+                          • {option.vtvlName}
+                        </Typography>
+                      )}
+                    </Stack>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 600,
+                        color: 'text.primary',
+                        whiteSpace: 'normal',
+                        wordBreak: 'break-word',
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      {option.title}
+                    </Typography>
+                    {option.outputProduct && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: 'block', mt: 0.4, whiteSpace: 'normal', wordBreak: 'break-word' }}
+                      >
+                        📦 Sản phẩm đầu ra: <strong>{option.outputProduct}</strong>
+                      </Typography>
+                    )}
+                  </Box>
+                </Box>
+              );
+            }}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Chọn Tiêu chí KPI mẫu (Ngân hàng gốc)"
+                placeholder="Gõ mã (A.001, B.019...) hoặc từ khóa để tìm kiếm nhanh..."
+                helperText="Chọn tiêu chuẩn từ Ngân hàng gốc để tự động điền Tên, Sản phẩm đầu ra và Hệ số chuẩn. (Có thể xóa để tự nhập tự do)"
+              />
+            )}
+            slotProps={{
+              popper: {
+                sx: {
+                  zIndex: 1400,
+                },
+              },
+              paper: {
+                elevation: 8,
+                sx: {
+                  borderRadius: 2,
+                  mt: 0.5,
+                  maxHeight: 380,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.06)',
+                },
+              },
+            }}
+            sx={{
+              mb: 2,
+              '& .MuiAutocomplete-endAdornment': {
+                right: '8px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
+              },
+              '& .MuiAutocomplete-popupIndicator, & .MuiAutocomplete-clearIndicator': {
+                border: 'none !important',
+                backgroundColor: 'transparent !important',
+                boxShadow: 'none !important',
+                padding: '4px !important',
+                margin: 0,
+                width: 'auto !important',
+                height: 'auto !important',
+                color: 'text.secondary',
+                transition: 'transform 0.2s ease, color 0.2s ease',
+                '&:hover': {
+                  backgroundColor: 'transparent !important',
+                  color: 'primary.main',
+                },
+              },
+            }}
+          />
+
           <TextField
             fullWidth
-            label="Tên nhiệm vụ"
+            label="Tên nhiệm vụ cụ thể"
             value={proposeForm.taskName}
             onChange={(e) => setProposeForm({ ...proposeForm, taskName: e.target.value })}
             sx={{ mb: 2 }}
           />
+
           <TextField
             fullWidth
             label="Sản phẩm đầu ra"
@@ -1823,6 +2117,7 @@ export default function PersonalKPIView() {
             onChange={(e) => setProposeForm({ ...proposeForm, outputProduct: e.target.value })}
             sx={{ mb: 2 }}
           />
+
           <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
             <TextField
               fullWidth
@@ -1838,14 +2133,32 @@ export default function PersonalKPIView() {
               onChange={(e) => setProposeForm({ ...proposeForm, unit: e.target.value })}
             />
           </Stack>
-          <TextField
-            fullWidth
-            type="date"
-            label="Hạn hoàn thành"
-            InputLabelProps={{ shrink: true }}
-            value={proposeForm.deadline}
-            onChange={(e) => setProposeForm({ ...proposeForm, deadline: e.target.value })}
-          />
+
+          <Stack direction="row" spacing={2}>
+            <TextField
+              fullWidth
+              type="number"
+              label="Hệ số quy đổi (Multiplier)"
+              inputProps={{ step: 0.01, min: 0.01, max: 10.0 }}
+              value={proposeForm.multiplier === '' ? '' : (proposeForm.multiplier ?? 1.0)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setProposeForm({
+                  ...proposeForm,
+                  multiplier: val === '' ? '' : parseFloat(val),
+                });
+              }}
+              helperText="Hệ số tính điểm 4 trục: Tự động lấy theo tiêu chuẩn mẫu hoặc tự do nhập bất kỳ số nào (VD: 0.33, 0.67, 1.0, 1.67, 3.33, 4.44...)"
+            />
+            <TextField
+              fullWidth
+              type="date"
+              label="Hạn hoàn thành"
+              InputLabelProps={{ shrink: true }}
+              value={proposeForm.deadline}
+              onChange={(e) => setProposeForm({ ...proposeForm, deadline: e.target.value })}
+            />
+          </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setProposeDialogOpen(false)} color="inherit" sx={{ textTransform: 'none' }}>

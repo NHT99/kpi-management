@@ -105,10 +105,14 @@ export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null
     const effectiveLateCount = task.isObjectiveLate ? 0 : Math.max(0, Number(task.lateCount) || 0);
     const tienDoQuyDoi = Math.max(0, Math.round((actualQuyDoi - (actualQuyDoi * effectiveLateCount * 0.25)) * 100) / 100);
 
-    sumTargetQuyDoi += targetQuyDoi;
-    sumActualQuyDoi += actualQuyDoi;
-    sumChatLuongQuyDoi += chatLuongQuyDoi;
-    sumTienDoQuyDoi += tienDoQuyDoi;
+    // Nếu nhiệm vụ đang 'Chờ duyệt', không cộng vào tổng chỉ tiêu/thực tế để tránh làm giảm tỷ lệ hoàn thành KPI của cán bộ
+    const isPending = task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt';
+    if (!isPending) {
+      sumTargetQuyDoi += targetQuyDoi;
+      sumActualQuyDoi += actualQuyDoi;
+      sumChatLuongQuyDoi += chatLuongQuyDoi;
+      sumTienDoQuyDoi += tienDoQuyDoi;
+    }
 
     return {
       ...task,
@@ -170,12 +174,9 @@ export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null
   }
 
   // BƯỚC 4: QUY ĐỔI RA ĐIỂM KPI CHÍNH THỨC CUỐI QUÝ (MAX 70đ)
-  let kpiRate = 0;
-  if (!isLeader) {
-    kpiRate = (rateA + rateB + rateC) / 3;
-  } else {
-    kpiRate = (rateA + rateB + rateC + (rateD ?? 100)) / 4;
-  }
+  const kpiRate = !isLeader
+    ? (rateA + rateB + rateC) / 3
+    : (rateA + rateB + rateC + (rateD ?? 100)) / 4;
 
   const rawFinalScore = kpiRate * 0.7;
   const finalKPIScore = Math.min(70, Math.max(0, Math.round(rawFinalScore * 100) / 100));
@@ -303,12 +304,9 @@ export function determineGrade(totalScore = 0) {
  * @returns {Object} Chi tiết 4 trục A, B, C, D và điểm số KPI cả năm (Max 70đ)
  */
 export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, isLeader = false) {
-  // Lọc chỉ tính những nhiệm vụ đã được duyệt (loại bỏ 'Chờ duyệt')
-  const validTasks = (Array.isArray(allTasksOfYear) ? allTasksOfYear : []).filter(
-    (t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt'
-  );
+  const allTasks = Array.isArray(allTasksOfYear) ? allTasksOfYear : [];
 
-  if (validTasks.length === 0) {
+  if (allTasks.length === 0) {
     return {
       rateA: 0,
       rateB: 0,
@@ -335,7 +333,7 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
   let sumChatLuongQuyDoi = 0;
   let sumTienDoQuyDoi = 0;
 
-  const convertedTasks = validTasks.map((task) => {
+  const convertedTasks = allTasks.map((task) => {
     const mult = Number(task.multiplier ?? task.conversionFactor ?? 1.0) || 1.0;
     const targetQty = Number(task.targetQty ?? task.target ?? 1) || 1;
     const actualQty = Number(task.actualQty ?? task.currentValue ?? 0) || 0;
@@ -353,10 +351,14 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
     const effectiveLateCount = isObjectiveLate ? 0 : lateCount;
     const tienDoQuyDoi = Math.max(0, actualQuyDoi - actualQuyDoi * effectiveLateCount * 0.25);
 
-    sumTargetQuyDoi += targetQuyDoi;
-    sumActualQuyDoi += actualQuyDoi;
-    sumChatLuongQuyDoi += chatLuongQuyDoi;
-    sumTienDoQuyDoi += tienDoQuyDoi;
+    // Nếu nhiệm vụ đang 'Chờ duyệt', không cộng vào tổng tính điểm
+    const isPending = task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt';
+    if (!isPending) {
+      sumTargetQuyDoi += targetQuyDoi;
+      sumActualQuyDoi += actualQuyDoi;
+      sumChatLuongQuyDoi += chatLuongQuyDoi;
+      sumTienDoQuyDoi += tienDoQuyDoi;
+    }
 
     return {
       ...task,
@@ -414,12 +416,9 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
   }
 
   // BƯỚC 4: Quy đổi ra điểm KPI Cả Năm (Max 70đ)
-  let kpiRate = 0;
-  if (!isLeader) {
-    kpiRate = (rateA + rateB + rateC) / 3;
-  } else {
-    kpiRate = (rateA + rateB + rateC + (rateD ?? 100)) / 4;
-  }
+  const kpiRate = !isLeader
+    ? (rateA + rateB + rateC) / 3
+    : (rateA + rateB + rateC + (rateD ?? 100)) / 4;
 
   const rawFinalScore = kpiRate * 0.7;
   const yearlyKPIScore = Math.min(70, Math.max(0, Math.round(rawFinalScore * 100) / 100));

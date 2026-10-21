@@ -145,14 +145,7 @@ export function KPIProvider({ children }) {
     setPersonalKPIs(INITIAL_PERSONAL_KPIS);
     setDeptStaff(INITIAL_DEPT_STAFF);
     setDeptSummaries(INITIAL_DEPT_SUMMARIES);
-    setAgencyApproval({
-      isApproved: false,
-      decisionNumber: '128/QĐ-BQL',
-      approvalDate: null,
-      councilNote:
-        'Hội đồng đánh giá thống nhất biểu quyết 100% công nhận kết quả thẩm định.',
-      signer: 'Lê Hoàng Long - Phó Giám đốc Ban',
-    });
+    setAgencyApprovals(INITIAL_AGENCY_APPROVALS);
   };
 
   const value = {

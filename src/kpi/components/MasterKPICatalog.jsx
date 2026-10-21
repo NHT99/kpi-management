@@ -30,8 +30,6 @@ import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_MASTER_KPIS } from '../data/mockKPIData';
 import { useToast } from '../hooks/useToast';
-import { useAuth } from '../../rbac/AuthContext';
-import { PERMISSIONS } from '../../rbac/permissions';
 import ExcelImportModal from './ExcelImportModal';
 
 const VTVL_OPTIONS = [
@@ -47,7 +45,6 @@ export default function MasterKPICatalog() {
   const [filterGroup, setFilterGroup] = useState('ALL');
   const [importModalOpen, setImportModalOpen] = useState(false);
   const { showToast, ToastComponent } = useToast();
-  const { hasPermission } = useAuth();
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);

@@ -16,7 +16,13 @@ export function AuthProvider({ children }) {
         const parsed = JSON.parse(saved);
         const all = getAllUsers();
         const exists = all.find((u) => u.id === parsed.id) || MOCK_USERS.find((u) => u.id === parsed.id);
-        return exists || parsed;
+        if (exists) {
+          if (exists.name !== parsed.name || exists.username !== parsed.username || exists.email !== parsed.email || exists.managedDeptId !== parsed.managedDeptId) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(exists));
+          }
+          return exists;
+        }
+        return parsed;
       }
     } catch {
       // Ignore parse error

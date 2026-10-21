@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -31,7 +31,7 @@ import BadgeRoundedIcon from '@mui/icons-material/BadgeRounded';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useToast } from '../../hooks/useToast';
 import { INITIAL_DEPARTMENTS, INITIAL_VTVLS, INITIAL_STAFFS } from '../../data/organizationData';
-import { ROLES, ROLE_DETAILS } from '../../../rbac/roles';
+import { ROLES, ROLE_DETAILS, getUserRoleBadge } from '../../../rbac/roles';
 import { useAuth } from '../../../rbac/AuthContext';
 import { logAction } from '../../utils/auditLogger';
 
@@ -42,6 +42,28 @@ export default function CanBoTab() {
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [vtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
   const { showToast, ToastComponent } = useToast();
+
+  // Auto-sync initial staffs (updates names or adds new staff if missing from stored staffs)
+  useEffect(() => {
+    setStaffs((prevStaffs) => {
+      let changed = false;
+      const updated = [...(prevStaffs || [])];
+      INITIAL_STAFFS.forEach((initStaff) => {
+        const idx = updated.findIndex((s) => s.id === initStaff.id);
+        if (idx === -1) {
+          updated.push(initStaff);
+          changed = true;
+        } else if (initStaff.id === 'user_new_01' && (updated[idx].name !== initStaff.name || updated[idx].username !== initStaff.username)) {
+          updated[idx] = { ...updated[idx], name: initStaff.name, username: initStaff.username, email: initStaff.email };
+          changed = true;
+        } else if (initStaff.id === 'user_new_02' && (!updated[idx].username || updated[idx].username !== initStaff.username)) {
+          updated[idx] = { ...updated[idx], username: initStaff.username, email: initStaff.email };
+          changed = true;
+        }
+      });
+      return changed ? updated : prevStaffs;
+    });
+  }, [setStaffs]);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -367,7 +389,7 @@ export default function CanBoTab() {
                     </TableCell>
                     <TableCell align="center">
                       <Chip
-                        label={staff.status === 'NO_ACCOUNT' ? 'Chờ cấp' : rDetails.shortName}
+                        label={staff.status === 'NO_ACCOUNT' ? 'Chờ cấp' : getUserRoleBadge({ role: staff.role, title: getVTVLTitle(staff.vtvlId) || staff.title }).label}
                         color={staff.status === 'NO_ACCOUNT' ? 'default' : rDetails.color}
                         size="small"
                         sx={{ fontWeight: 700, fontSize: '0.72rem' }}

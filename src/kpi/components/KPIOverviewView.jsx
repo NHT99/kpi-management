@@ -44,7 +44,6 @@ import { ROLES } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/organizationData';
-import { INITIAL_DEPT_STAFF } from '../kpiData';
 import { useToast } from '../hooks/useToast';
 import {
   calculateTotalKPIScore,
@@ -57,7 +56,7 @@ import {
   getStaffQuarterlyEvaluations,
   calculateQuarterlyAverage,
 } from '../utils/yearWorkflowHelper';
-import { getCurrentQuarterInfo, getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import * as XLSX from 'xlsx';
 
@@ -74,10 +73,6 @@ export default function KPIOverviewView() {
 
   // RBAC permissions check
   const isDeptHead = role === ROLES.DEPT_HEAD;
-  const isLeadershipOrAdmin =
-    role === ROLES.BAN_LEADER ||
-    role === ROLES.HR_ADMIN ||
-    role === ROLES.SUPER_ADMIN;
 
   // Selected filters - Mặc định Dashboard show dữ liệu cả năm
   const [selectedPeriod, setSelectedPeriod] = useState('YEAR_2026');
@@ -87,26 +82,8 @@ export default function KPIOverviewView() {
   const [selectedDeptId, setSelectedDeptId] = useState(defaultDept);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Combine staff master data
-  const allAvailableStaffs = useMemo(() => {
-    const combined = [...staffs];
-    INITIAL_DEPT_STAFF.forEach((ds) => {
-      if (!combined.some((s) => s.id === ds.id || s.name === ds.name)) {
-        combined.push({
-          id: ds.id,
-          employeeCode: ds.employeeCode || `CB-${ds.id}`,
-          name: ds.name,
-          title: ds.title,
-          deptId: 'DEP_TCD',
-          vtvlId: 'vtvl_04',
-          role: ds.role || ROLES.STAFF,
-          status: 'ACTIVE',
-          email: ds.email,
-        });
-      }
-    });
-    return combined;
-  }, [staffs]);
+  // Staff master data directly from stored staffs
+  const allAvailableStaffs = staffs;
 
   // Compute all staff evaluations data
   const allStaffCalculatedData = useMemo(() => {
@@ -196,7 +173,7 @@ export default function KPIOverviewView() {
       }
 
       // Part 1: Auto KPI score (Max 70đ)
-      let autoKPIScore = 0;
+      let autoKPIScore;
       if (existingEval?.autoKPIScore !== undefined) {
         autoKPIScore = Number(existingEval.autoKPIScore);
       } else if (isYear) {
@@ -221,7 +198,7 @@ export default function KPIOverviewView() {
       const totalScore = Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10);
 
       // Part 4: Grade classification (áp dụng khống chế nếu là Cả Năm theo Hướng dẫn 05-HD/TU)
-      let grade = '';
+      let grade;
       if (existingEval?.grade) {
         grade = existingEval.grade;
       } else if (isYear) {
@@ -353,12 +330,9 @@ export default function KPIOverviewView() {
     return deptList.map((dept) => {
       const deptStaffs = allStaffCalculatedData.filter((s) => s.deptId === dept.id);
       const count = deptStaffs.length;
-      let avgScore = 0;
-      if (count > 0) {
-        avgScore = Math.round((deptStaffs.reduce((sum, s) => sum + s.totalScore, 0) / count) * 10) / 10;
-      } else {
-        avgScore = fallbackScores[dept.id] || 80.0;
-      }
+      const avgScore = count > 0
+        ? Math.round((deptStaffs.reduce((sum, s) => sum + s.totalScore, 0) / count) * 10) / 10
+        : (fallbackScores[dept.id] || 80.0);
 
       return {
         deptId: dept.id,
@@ -408,10 +382,10 @@ export default function KPIOverviewView() {
           staff.name,
           staff.deptName,
           staff.vtvlTitle,
-          staff.autoKPIScore,
-          staff.ethicsScore,
-          staff.totalScore,
-          staff.grade,
+          staff.autoKPIScore != null ? staff.autoKPIScore : '-',
+          staff.ethicsScore != null ? staff.ethicsScore : '-',
+          staff.totalScore != null ? staff.totalScore : '-',
+          staff.grade || '-',
         ]);
       });
 
@@ -462,19 +436,27 @@ export default function KPIOverviewView() {
       const dateStr = `Đắk Lắk, ngày ${today.getDate()} tháng ${today.getMonth() + 1} năm ${today.getFullYear()}`;
       const deptTitle = selectedDeptId === 'ALL' ? 'Toàn cơ quan' : departments.find((d) => d.id === selectedDeptId)?.name || 'Phòng chuyên môn';
 
-      const tableRowsHtml = filteredStaffList.map((s, idx) => `
+      const tableRowsHtml = filteredStaffList.map((s, idx) => {
+        const kpiText = s.autoKPIScore != null ? s.autoKPIScore : '-';
+        const ethicsText = s.ethicsScore != null ? s.ethicsScore : '-';
+        const totalText = s.totalScore != null ? s.totalScore : '-';
+        const totalColor = s.totalScore != null ? '#0d47a1' : 'inherit';
+        const gradeText = s.grade || '-';
+
+        return `
         <tr>
           <td style="text-align: center; padding: 6px 4px;">${idx + 1}</td>
           <td style="text-align: center; padding: 6px 4px; font-weight: bold;">${s.employeeCode}</td>
           <td style="padding: 6px 8px; font-weight: bold;">${s.name}</td>
           <td style="padding: 6px 8px;">${s.deptName}</td>
           <td style="padding: 6px 8px;">${s.vtvlTitle}</td>
-          <td style="text-align: center; padding: 6px 4px;">${s.autoKPIScore}</td>
-          <td style="text-align: center; padding: 6px 4px;">${s.ethicsScore}</td>
-          <td style="text-align: center; padding: 6px 4px; font-weight: bold; color: #0d47a1;">${s.totalScore}</td>
-          <td style="text-align: center; padding: 6px 6px; font-weight: 600;">${s.grade}</td>
+          <td style="text-align: center; padding: 6px 4px;">${kpiText}</td>
+          <td style="text-align: center; padding: 6px 4px;">${ethicsText}</td>
+          <td style="text-align: center; padding: 6px 4px; font-weight: bold; color: ${totalColor};">${totalText}</td>
+          <td style="text-align: center; padding: 6px 6px; font-weight: 600;">${gradeText}</td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
 
       const htmlContent = `
         <!DOCTYPE html>
@@ -493,21 +475,23 @@ export default function KPIOverviewView() {
                 line-height: 1.35;
                 color: #000;
                 margin: 0;
-                padding: 10px;
+                padding: 0;
               }
               table.official-table {
                 width: 100%;
                 border-collapse: collapse;
-                margin-top: 12px;
-                font-size: 11pt;
+                margin-top: 10px;
+                font-size: 10.5pt;
+                table-layout: fixed;
               }
               table.official-table th, table.official-table td {
                 border: 1px solid #000;
+                word-wrap: break-word;
               }
               table.official-table th {
                 background-color: #f2f2f2;
                 font-weight: bold;
-                padding: 8px 4px;
+                padding: 6px 3px;
                 text-align: center;
               }
               .text-center { text-align: center; }
@@ -541,9 +525,9 @@ export default function KPIOverviewView() {
               </tr>
             </table>
 
-            <div class="text-center" style="margin: 20px 0 16px;">
+            <div class="text-center" style="margin: 18px 0 14px;">
               <div class="bold uppercase" style="font-size: 15pt; line-height: 1.3;">
-                BÁO CÁO TỔNG HỢP KẾT QUẢ ĐÁNH GIÁ, XẾP LOẠI KPI
+                BÁO CÁO TỔNG HỢP KẾT QUẢ ĐÁNH GIÁ, XẾP LOẠI
               </div>
               <div class="bold uppercase" style="font-size: 13pt; margin-top: 4px;">
                 ${selectedPeriodLabel}
@@ -553,22 +537,38 @@ export default function KPIOverviewView() {
               </div>
             </div>
 
-            <div style="margin-bottom: 12px;">
+            <div style="margin-bottom: 14px;">
               <div class="bold" style="font-size: 12pt; margin-bottom: 6px;">
                 I. TỔNG HỢP KẾT QUẢ VÀ TỶ LỆ XẾP LOẠI CHẤT LƯỢNG
               </div>
-              <table style="width: 100%; border-collapse: collapse; font-size: 11.5pt; margin-bottom: 10px;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 11pt; margin-bottom: 8px; table-layout: fixed;">
+                <colgroup>
+                  <col style="width: 50%;">
+                  <col style="width: 50%;">
+                </colgroup>
                 <tr>
-                  <td style="padding: 4px 0;">- Tổng số cán bộ, công chức được đánh giá: <strong>${totalStaffCount}</strong> đồng chí.</td>
-                  <td style="padding: 4px 0;">- Điểm trung bình toàn đơn vị: <strong>${avgTotalScore} / 100 điểm</strong>.</td>
+                  <td style="padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap;">
+                    - Tổng số cán bộ, CC được đánh giá: <strong>${totalStaffCount}</strong> đồng chí.
+                  </td>
+                  <td style="padding: 3px 0 3px 8px; vertical-align: top; white-space: nowrap;">
+                    - Điểm trung bình toàn đơn vị: <strong>${avgTotalScore} / 100 điểm</strong>.
+                  </td>
                 </tr>
                 <tr>
-                  <td style="padding: 4px 0;">- Hoàn thành xuất sắc nhiệm vụ: <strong>${countXuatSac}</strong> đồng chí (tỷ lệ <strong>${pctXuatSac}%</strong>).</td>
-                  <td style="padding: 4px 0;">- Hoàn thành tốt nhiệm vụ: <strong>${countTot}</strong> đồng chí (tỷ lệ <strong>${pctTot}%</strong>).</td>
+                  <td style="padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap;">
+                    - Hoàn thành xuất sắc nhiệm vụ: <strong>${countXuatSac}</strong> đồng chí (<strong>${pctXuatSac}%</strong>).
+                  </td>
+                  <td style="padding: 3px 0 3px 8px; vertical-align: top; white-space: nowrap;">
+                    - Hoàn thành tốt nhiệm vụ: <strong>${countTot}</strong> đồng chí (<strong>${pctTot}%</strong>).
+                  </td>
                 </tr>
                 <tr>
-                  <td style="padding: 4px 0;">- Hoàn thành nhiệm vụ: <strong>${countHoanThanh}</strong> đồng chí (tỷ lệ <strong>${pctHoanThanh}%</strong>).</td>
-                  <td style="padding: 4px 0;">- Không hoàn thành nhiệm vụ: <strong>${countKhongHT}</strong> đồng chí (tỷ lệ <strong>${pctKhongHT}%</strong>).</td>
+                  <td style="padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap;">
+                    - Hoàn thành nhiệm vụ: <strong>${countHoanThanh}</strong> đồng chí (<strong>${pctHoanThanh}%</strong>).
+                  </td>
+                  <td style="padding: 3px 0 3px 8px; vertical-align: top; white-space: nowrap;">
+                    - Không hoàn thành nhiệm vụ: <strong>${countKhongHT}</strong> đồng chí (<strong>${pctKhongHT}%</strong>).
+                  </td>
                 </tr>
               </table>
             </div>
@@ -581,14 +581,14 @@ export default function KPIOverviewView() {
                 <thead>
                   <tr>
                     <th style="width: 5%;">STT</th>
-                    <th style="width: 12%;">Mã CB</th>
-                    <th style="width: 22%;">Họ và tên</th>
-                    <th style="width: 18%;">Phòng ban</th>
-                    <th style="width: 18%;">Vị trí việc làm</th>
+                    <th style="width: 11%;">Mã CB</th>
+                    <th style="width: 19%;">Họ và tên</th>
+                    <th style="width: 16%;">Phòng ban</th>
+                    <th style="width: 16%;">Vị trí việc làm</th>
                     <th style="width: 7%;">Điểm KPI (70đ)</th>
                     <th style="width: 7%;">Điểm PC (30đ)</th>
-                    <th style="width: 8%;">Tổng điểm (100đ)</th>
-                    <th style="width: 13%;">Xếp loại</th>
+                    <th style="width: 7%;">Tổng điểm (100đ)</th>
+                    <th style="width: 12%;">Xếp loại</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -655,16 +655,80 @@ export default function KPIOverviewView() {
   const getGradeChipProps = (grade) => {
     switch (grade) {
       case 'Hoàn thành xuất sắc nhiệm vụ':
-        return { color: 'success', label: 'Xuất sắc', sx: { fontWeight: 700, bgcolor: '#2e7d32', color: '#fff' } };
+        return {
+          label: 'Xuất sắc',
+          sx: {
+            fontWeight: 700,
+            bgcolor: '#1e7b34 !important',
+            color: '#ffffff !important',
+            border: 'none',
+            '& .MuiChip-label': {
+              color: '#ffffff !important',
+              fontWeight: 700,
+              px: 1.25,
+            },
+          },
+        };
       case 'Hoàn thành tốt nhiệm vụ':
-        return { color: 'primary', label: 'Tốt', sx: { fontWeight: 700, bgcolor: '#1976d2', color: '#fff' } };
+        return {
+          label: 'Tốt',
+          sx: {
+            fontWeight: 700,
+            bgcolor: '#1976d2 !important',
+            color: '#ffffff !important',
+            border: 'none',
+            '& .MuiChip-label': {
+              color: '#ffffff !important',
+              fontWeight: 700,
+              px: 1.5,
+            },
+          },
+        };
       case 'Hoàn thành nhiệm vụ':
-        return { color: 'warning', label: 'Hoàn thành', sx: { fontWeight: 700, bgcolor: '#ed6c02', color: '#fff' } };
+        return {
+          label: 'Hoàn thành',
+          sx: {
+            fontWeight: 700,
+            bgcolor: '#ed6c02 !important',
+            color: '#ffffff !important',
+            border: 'none',
+            '& .MuiChip-label': {
+              color: '#ffffff !important',
+              fontWeight: 700,
+              px: 1,
+            },
+          },
+        };
       case 'Không hoàn thành nhiệm vụ':
-        return { color: 'error', label: 'Không HT', sx: { fontWeight: 700, bgcolor: '#d32f2f', color: '#fff' } };
+        return {
+          label: 'Không HT',
+          sx: {
+            fontWeight: 700,
+            bgcolor: '#d32f2f !important',
+            color: '#ffffff !important',
+            border: 'none',
+            '& .MuiChip-label': {
+              color: '#ffffff !important',
+              fontWeight: 700,
+              px: 1,
+            },
+          },
+        };
       case 'Chưa đánh giá':
       default:
-        return { variant: 'outlined', label: 'Chưa đánh giá', sx: { fontWeight: 600, color: 'text.secondary', borderColor: 'divider' } };
+        return {
+          variant: 'outlined',
+          label: 'Chưa đánh giá',
+          sx: {
+            fontWeight: 600,
+            color: 'text.secondary',
+            borderColor: 'divider',
+            '& .MuiChip-label': {
+              color: 'text.secondary',
+              fontWeight: 600,
+            },
+          },
+        };
     }
   };
 
@@ -1464,8 +1528,8 @@ export default function KPIOverviewView() {
           filteredStaffList.length > 0
             ? filteredStaffList
             : (selectedDeptId && selectedDeptId !== 'ALL'
-                ? allStaffCalculatedData.filter((s) => s.deptId === selectedDeptId)
-                : allStaffCalculatedData)
+              ? allStaffCalculatedData.filter((s) => s.deptId === selectedDeptId)
+              : allStaffCalculatedData)
         }
         departments={departments}
       />

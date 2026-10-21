@@ -44,7 +44,7 @@ import AutoFixHighRoundedIcon from '@mui/icons-material/AutoFixHighRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 
 import { useAuth } from '../../rbac/AuthContext';
-import { ROLES, ROLE_DETAILS } from '../../rbac/roles';
+import { ROLES, ROLE_DETAILS, getUserRoleBadge, getEffectiveManagedDeptId } from '../../rbac/roles';
 import { MOCK_USERS } from '../../rbac/users';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/organizationData';
@@ -99,22 +99,6 @@ export default function AccountManagementView() {
     isActive: true,
   });
   const [usernameError, setUsernameError] = useState('');
-
-  // 1. RBAC CHECK: ONLY SUPER_ADMIN
-  if (!isSuperAdmin) {
-    return (
-      <Box sx={{ width: '100%', py: 4 }}>
-        <Alert severity="error" variant="filled" icon={<LockRoundedIcon fontSize="inherit" />} sx={{ borderRadius: 2 }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            Truy cập bị từ chối theo chính sách bảo mật RBAC
-          </Typography>
-          <Typography variant="body2" sx={{ mt: 0.5 }}>
-            Tính năng <strong>Quản lý & Cấp phát Tài khoản</strong> chỉ dành riêng cho <strong>Quản trị viên cấp cao (SUPER_ADMIN)</strong>. Các vai trò khác không có quyền truy cập vào danh mục tài khoản và mật khẩu hệ thống.
-          </Typography>
-        </Alert>
-      </Box>
-    );
-  }
 
   // Auto-reconcile with MOCK_USERS and localStorage 'kpi_users' to ensure active accounts are displayed correctly
   useEffect(() => {
@@ -275,6 +259,7 @@ export default function AccountManagementView() {
   const handleGenerateRandomPass = () => {
     const rand = Math.floor(1000 + Math.random() * 9000);
     setFormInputs((prev) => ({ ...prev, password: `BanTC@${rand}` }));
+    setShowPassword(true);
     showToast('Đã tạo mật khẩu ngẫu nhiên an toàn!', 'info');
   };
 
@@ -302,6 +287,21 @@ export default function AccountManagementView() {
     const finalStatus = formInputs.isActive ? 'ACTIVE' : 'LOCKED';
     const finalPassword = formInputs.password.trim() || selectedStaff.password || 'password123';
     const finalRole = formInputs.role || ROLES.STAFF;
+    const finalTitle = selectedStaff.vtvlTitle || selectedStaff.title || 'Chuyên viên';
+    const effectiveManagedDept =
+      finalRole === ROLES.BAN_LEADER
+        ? getEffectiveManagedDeptId(
+          {
+            id: selectedStaff.id,
+            username: trimmedUser,
+            title: finalTitle,
+            department: selectedStaff.deptName || selectedStaff.department,
+            deptId: selectedStaff.deptId,
+            managedDeptId: selectedStaff.managedDeptId,
+          },
+          departments
+        )
+        : '';
 
     // 1. Update staffs in localStorage
     setStaffs((prevStaffs) => {
@@ -313,6 +313,8 @@ export default function AccountManagementView() {
             password: finalPassword,
             role: finalRole,
             status: finalStatus,
+            title: finalTitle,
+            managedDeptId: effectiveManagedDept,
             issuedDate: s.issuedDate || new Date().toISOString().split('T')[0],
           };
         }
@@ -336,7 +338,8 @@ export default function AccountManagementView() {
         status: finalStatus,
         deptId: selectedStaff.deptId,
         department: selectedStaff.deptName,
-        title: selectedStaff.title,
+        title: finalTitle,
+        managedDeptId: effectiveManagedDept,
         email: selectedStaff.email || `${trimmedUser}@kpi.gov.vn`,
       };
 
@@ -367,11 +370,12 @@ export default function AccountManagementView() {
   };
 
   // Helper: Role Chip styling
-  const renderRoleChip = (roleKey) => {
+  const renderRoleChip = (roleKey, staff) => {
+    const badge = getUserRoleBadge({ role: roleKey, title: staff?.vtvlTitle || staff?.title });
     const details = ROLE_DETAILS[roleKey] || ROLE_DETAILS[ROLES.STAFF];
     return (
       <Chip
-        label={details.shortName || details.name}
+        label={badge.label}
         size="small"
         sx={{
           bgcolor: details.badgeBg || 'rgba(0,0,0,0.06)',
@@ -384,6 +388,22 @@ export default function AccountManagementView() {
       />
     );
   };
+
+  // 1. RBAC CHECK: ONLY SUPER_ADMIN
+  if (!isSuperAdmin) {
+    return (
+      <Box sx={{ width: '100%', py: 4 }}>
+        <Alert severity="error" variant="filled" icon={<LockRoundedIcon fontSize="inherit" />} sx={{ borderRadius: 2 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            Truy cập bị từ chối theo chính sách bảo mật RBAC
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            Tính năng <strong>Quản lý & Cấp phát Tài khoản</strong> chỉ dành riêng cho <strong>Quản trị viên cấp cao (SUPER_ADMIN)</strong>. Các vai trò khác không có quyền truy cập vào danh mục tài khoản và mật khẩu hệ thống.
+          </Typography>
+        </Alert>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ width: '100%', pb: 5 }}>
@@ -653,7 +673,7 @@ export default function AccountManagementView() {
                         {isPending ? (
                           <Chip label="Chờ phân quyền" size="small" variant="outlined" color="warning" sx={{ fontSize: '0.7rem' }} />
                         ) : (
-                          renderRoleChip(staff.role)
+                          renderRoleChip(staff.role, staff)
                         )}
                       </TableCell>
 
@@ -838,8 +858,24 @@ export default function AccountManagementView() {
                     endAdornment: (
                       <InputAdornment position="end">
                         <Tooltip title="Tự động tạo gợi ý từ Họ tên cán bộ" arrow>
-                          <IconButton size="small" onClick={() => handleUsernameChange(generateSuggestedUsername(selectedStaff.name))}>
-                            <AutoFixHighRoundedIcon fontSize="small" color="primary" />
+                          <IconButton
+                            size="small"
+                            edge="end"
+                            onClick={() => handleUsernameChange(generateSuggestedUsername(selectedStaff.name))}
+                            sx={{
+                              border: 'none !important',
+                              backgroundColor: 'transparent !important',
+                              boxShadow: 'none !important',
+                              p: '4px !important',
+                              mr: '-4px !important',
+                              color: 'primary.main',
+                              '&:hover': {
+                                backgroundColor: 'rgba(25, 118, 210, 0.08) !important',
+                                color: 'primary.dark',
+                              },
+                            }}
+                          >
+                            <AutoFixHighRoundedIcon sx={{ fontSize: 20 }} />
                           </IconButton>
                         </Tooltip>
                       </InputAdornment>
@@ -851,8 +887,24 @@ export default function AccountManagementView() {
                   endAdornment: (
                     <InputAdornment position="end">
                       <Tooltip title="Tự động tạo gợi ý từ Họ tên cán bộ" arrow>
-                        <IconButton size="small" onClick={() => handleUsernameChange(generateSuggestedUsername(selectedStaff.name))}>
-                          <AutoFixHighRoundedIcon fontSize="small" color="primary" />
+                        <IconButton
+                          size="small"
+                          edge="end"
+                          onClick={() => handleUsernameChange(generateSuggestedUsername(selectedStaff.name))}
+                          sx={{
+                            border: 'none !important',
+                            backgroundColor: 'transparent !important',
+                            boxShadow: 'none !important',
+                            p: '4px !important',
+                            mr: '-4px !important',
+                            color: 'primary.main',
+                            '&:hover': {
+                              backgroundColor: 'rgba(25, 118, 210, 0.08) !important',
+                              color: 'primary.dark',
+                            },
+                          }}
+                        >
+                          <AutoFixHighRoundedIcon sx={{ fontSize: 20 }} />
                         </IconButton>
                       </Tooltip>
                     </InputAdornment>
@@ -862,7 +914,15 @@ export default function AccountManagementView() {
               />
 
               {/* Password Input Header with Prominent Random Pass Button */}
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.75 }}>
+              <Box
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  width: '100%',
+                  mb: 0.75,
+                }}
+              >
                 <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
                   Mật khẩu khởi tạo:
                 </Typography>
@@ -872,11 +932,18 @@ export default function AccountManagementView() {
                   color="primary"
                   startIcon={<AutoFixHighRoundedIcon sx={{ fontSize: 16 }} />}
                   onClick={handleGenerateRandomPass}
-                  sx={{ textTransform: 'none', fontWeight: 700, fontSize: '0.78rem', py: 0.3, px: 1.2, borderRadius: 1.5 }}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.78rem',
+                    py: 0.35,
+                    px: 1.25,
+                    borderRadius: 1.5,
+                  }}
                 >
                   Tạo ngẫu nhiên mật khẩu
                 </Button>
-              </Stack>
+              </Box>
 
               {/* Password Input */}
               <TextField
@@ -890,20 +957,33 @@ export default function AccountManagementView() {
                   input: {
                     startAdornment: (
                       <InputAdornment position="start">
-                        <LockRoundedIcon fontSize="small" color="action" />
+                        <LockRoundedIcon sx={{ fontSize: 20 }} color="action" />
                       </InputAdornment>
                     ),
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton
-                          size="small"
-                          edge="end"
-                          onClick={() => setShowPassword(!showPassword)}
-                          aria-label="toggle password visibility"
-                          sx={{ color: 'text.secondary' }}
-                        >
-                          {showPassword ? <VisibilityOffRoundedIcon fontSize="small" /> : <VisibilityRoundedIcon fontSize="small" />}
-                        </IconButton>
+                        <Tooltip title={showPassword ? 'Ẩn mật khẩu' : 'Hiển thị mật khẩu'} arrow>
+                          <IconButton
+                            size="small"
+                            edge="end"
+                            onClick={() => setShowPassword(!showPassword)}
+                            aria-label="toggle password visibility"
+                            sx={{
+                              border: 'none !important',
+                              backgroundColor: 'transparent !important',
+                              boxShadow: 'none !important',
+                              p: '4px !important',
+                              mr: '-4px !important',
+                              color: showPassword ? 'primary.main' : 'text.secondary',
+                              '&:hover': {
+                                backgroundColor: 'rgba(0, 0, 0, 0.04) !important',
+                                color: 'primary.main',
+                              },
+                            }}
+                          >
+                            {showPassword ? <VisibilityOffRoundedIcon sx={{ fontSize: 20 }} /> : <VisibilityRoundedIcon sx={{ fontSize: 20 }} />}
+                          </IconButton>
+                        </Tooltip>
                       </InputAdornment>
                     ),
                   },
@@ -911,20 +991,33 @@ export default function AccountManagementView() {
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <LockRoundedIcon fontSize="small" color="action" />
+                      <LockRoundedIcon sx={{ fontSize: 20 }} color="action" />
                     </InputAdornment>
                   ),
                   endAdornment: (
                     <InputAdornment position="end">
-                      <IconButton
-                        size="small"
-                        edge="end"
-                        onClick={() => setShowPassword(!showPassword)}
-                        aria-label="toggle password visibility"
-                        sx={{ color: 'text.secondary' }}
-                      >
-                        {showPassword ? <VisibilityOffRoundedIcon fontSize="small" /> : <VisibilityRoundedIcon fontSize="small" />}
-                      </IconButton>
+                      <Tooltip title={showPassword ? 'Ẩn mật khẩu' : 'Hiển thị mật khẩu'} arrow>
+                        <IconButton
+                          size="small"
+                          edge="end"
+                          onClick={() => setShowPassword(!showPassword)}
+                          aria-label="toggle password visibility"
+                          sx={{
+                            border: 'none !important',
+                            backgroundColor: 'transparent !important',
+                            boxShadow: 'none !important',
+                            p: '4px !important',
+                            mr: '-4px !important',
+                            color: showPassword ? 'primary.main' : 'text.secondary',
+                            '&:hover': {
+                              backgroundColor: 'rgba(0, 0, 0, 0.04) !important',
+                              color: 'primary.main',
+                            },
+                          }}
+                        >
+                          {showPassword ? <VisibilityOffRoundedIcon sx={{ fontSize: 20 }} /> : <VisibilityRoundedIcon sx={{ fontSize: 20 }} />}
+                        </IconButton>
+                      </Tooltip>
                     </InputAdornment>
                   ),
                 }}
@@ -939,7 +1032,7 @@ export default function AccountManagementView() {
                 required
                 value={formInputs.role}
                 onChange={(e) => setFormInputs({ ...formInputs, role: e.target.value })}
-                helperText="Xác định phạm vi quyền hạn và các màn hình cán bộ được phép thao tác"
+                // helperText="Xác định phạm vi quyền hạn và các màn hình cán bộ được phép thao tác"
                 sx={{ mb: 2.5 }}
               >
                 <MenuItem value={ROLES.SUPER_ADMIN}>
@@ -1004,11 +1097,11 @@ export default function AccountManagementView() {
                   <Typography variant="body2" sx={{ fontWeight: 700 }}>
                     {formInputs.isActive ? 'Trạng thái: Đang hoạt động (ACTIVE)' : 'Trạng thái: Đang tạm khóa (LOCKED)'}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
+                  {/* <Typography variant="caption" color="text.secondary">
                     {formInputs.isActive
                       ? 'Cán bộ có thể đăng nhập bình thường vào hệ thống với Username & Password trên.'
                       : 'Cán bộ sẽ bị chặn đăng nhập cho đến khi Super Admin kích hoạt lại.'}
-                  </Typography>
+                  </Typography>  */}
                 </Box>
 
                 <FormControlLabel

@@ -30,13 +30,12 @@ import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded';
 
 import { useAuth } from '../../rbac/AuthContext';
 import { ROLES } from '../../rbac/roles';
-import { PERMISSIONS } from '../../rbac/permissions';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_AUDIT_LOGS } from '../utils/auditLogger';
 import { useToast } from '../hooks/useToast';
 
 export default function AuditLogView() {
-  const { currentUser, role, hasPermission } = useAuth();
+  const { role } = useAuth();
   const [logs, setLogs] = useLocalStorage('systemAuditLogs', INITIAL_AUDIT_LOGS);
   const { showToast, ToastComponent } = useToast();
 

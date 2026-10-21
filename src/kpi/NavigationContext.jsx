@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { useAuth } from '../rbac/AuthContext';
-import { ROLES } from '../rbac/roles';
+import { ROLES, isDeputyDeptHead } from '../rbac/roles';
 
 export const NAV_TABS = {
   ORGANIZATION: 'organization',         // Mục 1: Quản lý Cán bộ, VTVL, Phòng ban
@@ -18,7 +18,8 @@ export const NAV_TABS = {
 const NavigationContext = createContext(null);
 
 export function NavigationProvider({ children }) {
-  const { role } = useAuth();
+  const { role, currentUser } = useAuth();
+  const isDeputy = isDeputyDeptHead(currentUser);
 
   // Initialize active tab from URL pathname (e.g., /organization, /kpi-management)
   const getTabFromPath = () => {
@@ -36,13 +37,18 @@ export function NavigationProvider({ children }) {
   }
 
   const defaultTab =
-    role === ROLES.STAFF
+    role === ROLES.STAFF || isDeputy
       ? NAV_TABS.PERSONAL
       : role === ROLES.SUPER_ADMIN
         ? NAV_TABS.ACCOUNT_MANAGEMENT
-        : NAV_TABS.OVERVIEW;
+        : role === ROLES.HR_ADMIN
+          ? NAV_TABS.ORGANIZATION
+          : NAV_TABS.OVERVIEW;
 
-  const activeTab = userSelectedTab || defaultTab;
+  // Nếu là Phó phòng mà tab đang chọn là DEPARTMENT -> Chuyển về PERSONAL
+  const activeTab = (isDeputy && userSelectedTab === NAV_TABS.DEPARTMENT)
+    ? NAV_TABS.PERSONAL
+    : (userSelectedTab || defaultTab);
 
   const handleSetActiveTab = (tab) => {
     setUserSelectedTab(tab);
