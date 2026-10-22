@@ -21,7 +21,7 @@ import ManageAccountsRoundedIcon from '@mui/icons-material/ManageAccountsRounded
 
 import { useNavigation, NAV_TABS } from '../../kpi/NavigationContext';
 import { useAuth } from '../../rbac/AuthContext';
-import { ROLES, isDeputyDeptHead, isTrueDeptHead } from '../../rbac/roles';
+import { ROLES, isDeputyDeptHead, isTrueDeptHead, isAgencyHead } from '../../rbac/roles';
 import { PERMISSIONS } from '../../rbac/permissions';
 
 export default function MenuContent({ collapsed = false }) {
@@ -86,10 +86,17 @@ export default function MenuContent({ collapsed = false }) {
     (isTrueDeptHead(currentUser) || role === ROLES.BAN_LEADER) &&
     hasPermission(PERMISSIONS.KPI_DEPT_VIEW_SUMMARY)
   ) {
+    const isHead = isAgencyHead(currentUser);
     items.push({
       id: NAV_TABS.DEPARTMENT,
-      text: role === ROLES.BAN_LEADER ? 'Thẩm định Trưởng phòng' : 'Đánh giá KPI Cấp phòng',
-      subtext: 'Chấm điểm công chức & xem tổng hợp',
+      text: isHead
+        ? 'Thẩm định Phó Trưởng ban'
+        : role === ROLES.BAN_LEADER
+          ? 'Thẩm định Trưởng phòng'
+          : 'Đánh giá KPI Cấp phòng',
+      subtext: isHead
+        ? 'Chấm điểm & đánh giá Phó Trưởng ban'
+        : 'Chấm điểm công chức & xem tổng hợp',
       icon: <SupervisorAccountRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'warning',
     });

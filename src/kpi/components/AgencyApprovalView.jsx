@@ -23,6 +23,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Paper from '@mui/material/Paper';
 import TablePagination from '@mui/material/TablePagination';
+import IconButton from '@mui/material/IconButton';
 
 import GavelRoundedIcon from '@mui/icons-material/GavelRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
@@ -33,6 +34,9 @@ import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
+import HourglassEmptyRoundedIcon from '@mui/icons-material/HourglassEmptyRounded';
+import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
@@ -42,7 +46,8 @@ import MenuItem from '@mui/material/MenuItem';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
-import { ROLES, getEffectiveManagedDeptId } from '../../rbac/roles';
+import { getAllUsers } from '../../rbac/users';
+import { ROLES, getEffectiveManagedDeptId, isTrueDeptHead, isDeputyDeptHead, getUserRoleBadge, getDirectSupervisorForStaff, isSameDept, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
 import { getFullYearQuarterOptions } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import DocumentGeneratorModal from './DocumentGeneratorModal';
@@ -77,8 +82,9 @@ export default function AgencyApprovalView() {
     role === ROLES.SUPER_ADMIN;
 
   // Trưởng ban / Chủ tịch Hội đồng: người duy nhất có thẩm quyền ký và ban hành Quyết định toàn Ban
-  const isAgencyHead =
+  const isCurrentUserAgencyHead =
     role === ROLES.SUPER_ADMIN ||
+    isAgencyHead(currentUser) ||
     (role === ROLES.BAN_LEADER && getEffectiveManagedDeptId(currentUser, departments) === 'ALL');
 
   // Mặc định chọn Quý III/2026 hoặc Cả Năm nếu Quý IV chưa có thẩm định riêng
@@ -99,6 +105,12 @@ export default function AgencyApprovalView() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Modal xem chi tiết trạng thái đánh giá của từng thành viên trong phòng
+  const [deptDetailModal, setDeptDetailModal] = useState({
+    open: false,
+    dept: null,
+  });
 
   const selectedPeriodObj = PERIOD_OPTIONS.find((p) => p.value === selectedPeriod);
   const selectedPeriodLabel = selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod;
@@ -132,15 +144,46 @@ export default function AgencyApprovalView() {
     });
 
     setAssignedTasks((prev) => {
-      if (prev && prev.some((t) => obsoleteIds.includes(t.staffId) || obsoleteNames.includes(t.staffName))) {
-        return prev.filter((t) => !obsoleteIds.includes(t.staffId) && !obsoleteNames.includes(t.staffName));
+      if (!prev) return prev;
+      let changed = false;
+      let next = prev;
+      if (next.some((t) => obsoleteIds.includes(t.staffId) || obsoleteNames.includes(t.staffName))) {
+        next = next.filter((t) => !obsoleteIds.includes(t.staffId) && !obsoleteNames.includes(t.staffName));
+        changed = true;
       }
-      return prev;
+      next = next.map((t) => {
+        if (t.id === 'task-test-q3-01' && (t.status === 'Đã hoàn thành' || t.progress === 100 || t.progress === 0)) {
+          changed = true;
+          return { ...t, status: 'Đang tiến hành', progress: 75, actualQty: 3, currentValue: 3 };
+        }
+        return t;
+      });
+      return changed ? next : prev;
     });
   }, [setEvaluations, setAssignedTasks]);
 
-  // Staff master data directly from stored staffs
-  const allAvailableStaffs = staffs;
+  // Merge stored staffs with dynamic accounts from localStorage & MOCK_USERS
+  const allAvailableStaffs = useMemo(() => {
+    const userList = getAllUsers();
+    const merged = [...staffs];
+    userList.forEach((u) => {
+      if (!merged.some((s) => s.id === u.id || s.username === u.username || s.name === u.name)) {
+        merged.push({
+          id: u.id,
+          name: u.name,
+          username: u.username,
+          title: u.title,
+          deptId: u.deptId,
+          department: u.department,
+          role: u.role,
+          employeeCode: u.employeeCode,
+          managedDeptId: u.managedDeptId,
+          status: u.status || 'ACTIVE',
+        });
+      }
+    });
+    return merged;
+  }, [staffs]);
 
   // Kiểm tra nếu kỳ là Quý IV (không có quyết định xếp loại riêng theo 05-HD/TU)
   const isQ4Period = selectedPeriod.startsWith('Q4');
@@ -159,27 +202,72 @@ export default function AgencyApprovalView() {
     const operationalDepts = departments.filter((d) => d.id !== 'DEP_LDB');
 
     return operationalDepts.map((dept) => {
-      const deptStaffList = allAvailableStaffs.filter((s) => s.deptId === dept.id);
+      // DANH SÁCH CÁN BỘ THUỘC PHÒNG BAN:
+      // Bao gồm: Toàn bộ cán bộ, công chức thuộc phòng VÀ Phó Trưởng ban phụ trách phòng đó!
+      // LOẠI TRỪ DUY NHẤT:
+      // 1. SUPER_ADMIN và HR_ADMIN (vai trò quản trị/kỹ thuật)
+      // 2. Trưởng ban / Chủ tịch Hội đồng (quản trị toàn diện Ban, không thuộc riêng phòng ban nào)
+      const deptStaffList = allAvailableStaffs.filter((s) => {
+        if (s.role === ROLES.SUPER_ADMIN || s.role === ROLES.HR_ADMIN) return false;
+        if (isAgencyHead(s)) return false;
+
+        // Nếu là Phó Trưởng ban: Kiểm tra xem có được phân công phụ trách phòng này không
+        if (s.role === ROLES.BAN_LEADER || isDeputyBanLeader(s)) {
+          const leaderManagedDept = getEffectiveManagedDeptId(s, departments);
+          return (
+            (leaderManagedDept && isSameDept(leaderManagedDept, dept.id, departments)) ||
+            isSameDept(s.deptId || s.department, dept.id, departments) ||
+            (s.managedDeptId && isSameDept(s.managedDeptId, dept.id, departments))
+          );
+        }
+
+        // Cán bộ thuộc phòng (Trưởng phòng, Phó phòng, Chuyên viên)
+        return isSameDept(s.deptId || s.department, dept.id, departments);
+      });
+
+      // Sắp xếp thứ tự hiển thị chuẩn theo thứ bậc hành chính:
+      // 1. Phó Trưởng ban phụ trách
+      // 2. Trưởng phòng / Chánh Văn phòng
+      // 3. Phó Trưởng phòng / Phó Chánh VP
+      // 4. Chuyên viên
+      deptStaffList.sort((a, b) => {
+        const getRank = (u) => {
+          if (u.role === ROLES.BAN_LEADER || isDeputyBanLeader(u)) return 1;
+          if (isTrueDeptHead(u)) return 2;
+          if (isDeputyDeptHead(u)) return 3;
+          return 4;
+        };
+        return getRank(a) - getRank(b);
+      });
+
       const staffCount = deptStaffList.length;
 
-      // Tìm trưởng phòng
-      const headStaff = deptStaffList.find(
-        (s) => s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER
-      );
+      // Tìm Trưởng phòng thực thụ (ưu tiên isTrueDeptHead để tuyệt đối không nhận nhầm Phó phòng hoặc Phó ban)
+      const headStaff =
+        deptStaffList.find((s) => isTrueDeptHead(s)) ||
+        deptStaffList.find((s) => !isDeputyDeptHead(s) && !isDeputyBanLeader(s) && (s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER));
+
       const headName = headStaff
         ? headStaff.name
         : dept.id === 'DEP_TCD'
           ? 'Trần Thị Mai'
-          : dept.id === 'DEP_TCCB'
-            ? 'Phạm Thị Lan'
-            : dept.id === 'DEP_VP'
-              ? 'Nguyễn Văn Cường'
-              : 'Lãnh đạo phòng';
+          : 'Chưa phân công Trưởng phòng';
 
-      // Lọc các bản đánh giá của phòng trong kỳ đang chọn
+      // Tìm bản đánh giá của Trưởng phòng trong kỳ đang chọn
+      const headEval = evaluations.find((e) => {
+        const matchesHead = headStaff
+          ? (e.staffId === headStaff.id || e.staffName === headStaff.name)
+          : false;
+        return matchesHead && (e.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && e.period === 'Q3_2026'));
+      });
+
+      // Kiểm tra xem Lãnh đạo Ban phụ trách đã phê duyệt kết quả của Trưởng phòng hay chưa
+      const isHeadApprovedByBanLeader = Boolean(headEval && headEval.status === 'APPROVED');
+
+      // Lọc các bản đánh giá của phòng trong kỳ đang chọn (chỉ lấy các bản có điểm hợp lệ)
       const deptEvals = evaluations.filter((e) => {
         const isInDept = deptStaffList.some((s) => s.id === e.staffId || s.name === e.staffName);
-        return isInDept && (e.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && e.period === 'Q3_2026'));
+        return isInDept && (e.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && e.period === 'Q3_2026')) && e.totalScore !== undefined && e.totalScore !== null;
       });
 
       const xuatSac = deptEvals.filter((e) => e.grade === 'Hoàn thành xuất sắc nhiệm vụ').length;
@@ -187,12 +275,13 @@ export default function AgencyApprovalView() {
       const hoanThanh = deptEvals.filter((e) => e.grade === 'Hoàn thành nhiệm vụ').length;
       const khongHoanThanh = deptEvals.filter((e) => e.grade === 'Không hoàn thành nhiệm vụ').length;
 
+      // Điểm TB phòng: Nếu chưa có cán bộ nào có kết quả đánh giá thì là null (hiển thị '-')
       const avgScore =
         deptEvals.length > 0
           ? Math.round(
             (deptEvals.reduce((sum, e) => sum + (Number(e.totalScore) || 0), 0) / deptEvals.length) * 10
           ) / 10
-          : 88.5;
+          : null;
 
       // Tỷ lệ hoàn thành nhiệm vụ theo kỳ đang chọn
       const deptTasks = assignedTasks.filter((t) => {
@@ -201,21 +290,40 @@ export default function AgencyApprovalView() {
         if (selectedPeriod === 'YEAR_2026') return true;
         return t.period === selectedPeriod || (!t.period && selectedPeriod === 'Q4_2026');
       });
-      const completedTasks = deptTasks.filter((t) => t.progress === 100 || t.status === 'Đã hoàn thành').length;
-      const completionRate = deptTasks.length > 0
-        ? Math.round((completedTasks / deptTasks.length) * 100)
-        : (deptEvals.length > 0 ? 100 : 0);
+      const avgProgress = deptTasks.length > 0
+        ? Math.round(deptTasks.reduce((sum, t) => sum + (Number(t.progress) || 0), 0) / deptTasks.length)
+        : 0;
+      const completionRate = avgProgress;
+
+      // Trạng thái thẩm định của Phòng:
+      // - Nếu Quyết định toàn Ban đã được ký duyệt chính thức -> APPROVED ("Đã phê duyệt")
+      // - Nếu Lãnh đạo Ban phụ trách chưa phê duyệt kết quả Trưởng phòng -> PENDING_DEPT_EVALUATION ("Đang chờ đánh giá cấp phòng")
+      // - Nếu đã phê duyệt cấp phòng xong, đang chờ Hội đồng Ban họp và ký duyệt -> PENDING_COUNCIL ("Chờ Hội đồng duyệt")
+      let deptStatus = 'PENDING_DEPT_EVALUATION';
+      if (currentApproval.isApproved) {
+        deptStatus = 'APPROVED';
+      } else if (isHeadApprovedByBanLeader) {
+        deptStatus = 'PENDING_COUNCIL';
+      } else {
+        deptStatus = 'PENDING_DEPT_EVALUATION';
+      }
 
       return {
         id: dept.id,
         name: dept.name,
         code: dept.code,
         head: headName,
+        headStaff,
+        headEval,
+        isHeadApprovedByBanLeader,
+        deptStaffList,
+        deptEvals,
         staffCount,
+        hasTasks: deptTasks.length > 0,
         completionRate,
-        avgScore: avgScore || 88.0,
-        reviewedCount: deptEvals.length || staffCount,
-        status: currentApproval.isApproved ? 'APPROVED' : 'PENDING_COUNCIL',
+        avgScore,
+        reviewedCount: deptEvals.length,
+        status: deptStatus,
         ratingDistribution: {
           xuatSac,
           tot,
@@ -236,12 +344,15 @@ export default function AgencyApprovalView() {
 
   // Total metrics
   const totalStaffAll = dynamicDeptSummaries.reduce((sum, d) => sum + d.staffCount, 0);
-  const avgCompletionAll = (
-    dynamicDeptSummaries.reduce((sum, d) => sum + d.completionRate, 0) / (dynamicDeptSummaries.length || 1)
-  ).toFixed(1);
-  const avgScoreAll = (
-    dynamicDeptSummaries.reduce((sum, d) => sum + d.avgScore, 0) / (dynamicDeptSummaries.length || 1)
-  ).toFixed(1);
+  const deptsWithTasks = dynamicDeptSummaries.filter((d) => d.hasTasks);
+  const avgCompletionAll = deptsWithTasks.length > 0
+    ? (deptsWithTasks.reduce((sum, d) => sum + d.completionRate, 0) / deptsWithTasks.length).toFixed(1)
+    : '0.0';
+
+  const evaluatedDepts = dynamicDeptSummaries.filter((d) => d.avgScore !== null);
+  const avgScoreAll = evaluatedDepts.length > 0
+    ? (evaluatedDepts.reduce((sum, d) => sum + d.avgScore, 0) / evaluatedDepts.length).toFixed(1)
+    : '-';
 
   const totalXuatSac = dynamicDeptSummaries.reduce((sum, d) => sum + d.ratingDistribution.xuatSac, 0);
   const totalTot = dynamicDeptSummaries.reduce((sum, d) => sum + d.ratingDistribution.tot, 0);
@@ -564,7 +675,7 @@ export default function AgencyApprovalView() {
 
                 <Tooltip
                   title={
-                    !isAgencyHead
+                    !isCurrentUserAgencyHead
                       ? 'Chỉ Trưởng ban / Chủ tịch Hội đồng mới có thẩm quyền ký và ban hành Quyết định toàn cơ quan'
                       : canApprove
                       ? 'Phê duyệt chính thức và đóng kỳ đánh giá'
@@ -576,7 +687,7 @@ export default function AgencyApprovalView() {
                       variant="contained"
                       color="error"
                       size="large"
-                      disabled={!canApprove || !isAgencyHead}
+                      disabled={!canApprove || !isCurrentUserAgencyHead}
                       startIcon={<GavelRoundedIcon />}
                       onClick={handleOpenApprove}
                       sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 3 }}
@@ -634,11 +745,13 @@ export default function AgencyApprovalView() {
                   <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
                     ĐIỂM THẨM ĐỊNH BÌNH QUÂN
                   </Typography>
-                  <Typography variant="h4" sx={{ fontWeight: 700, mt: 0.5, color: 'error.main' }}>
+                  <Typography variant="h4" sx={{ fontWeight: 700, mt: 0.5, color: avgScoreAll !== '-' ? 'error.main' : 'text.secondary' }}>
                     {avgScoreAll}
-                    <Typography component="span" variant="body2" color="text.secondary">
-                      /100
-                    </Typography>
+                    {avgScoreAll !== '-' && (
+                      <Typography component="span" variant="body2" color="text.secondary">
+                        /100
+                      </Typography>
+                    )}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     Chỉ số KPI cơ quan {selectedPeriodLabel}
@@ -688,22 +801,23 @@ export default function AgencyApprovalView() {
             </Box>
 
             <TableContainer component={Paper} elevation={0}>
-              <Table sx={{ minWidth: 750 }}>
+              <Table sx={{ minWidth: 850 }}>
                 <TableHead sx={{ bgcolor: (theme) => (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : '#f8fafc') }}>
                   <TableRow>
                     <TableCell sx={{ fontWeight: 700 }}>Phòng ban chuyên môn</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Lãnh đạo phòng</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 100 }} align="center">Nhân sự</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 180 }}>Tỷ lệ hoàn thành</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 120 }} align="center">Điểm TB phòng</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 220 }}>Cơ cấu xếp loại</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 160 }} align="center">Trạng thái thẩm định</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 90 }} align="center">Nhân sự</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 160 }}>Tỷ lệ hoàn thành</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Điểm TB phòng</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 190 }}>Cơ cấu xếp loại</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 180 }} align="center">Trạng thái thẩm định</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 90 }} align="center">Chi tiết</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {paginatedDepts.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} sx={{ textAlign: 'center', py: 4 }}>
+                      <TableCell colSpan={8} sx={{ textAlign: 'center', py: 4 }}>
                         <Typography variant="body2" color="text.secondary">
                           Không tìm thấy phòng ban nào phù hợp.
                         </Typography>
@@ -711,10 +825,18 @@ export default function AgencyApprovalView() {
                     </TableRow>
                   ) : (
                     paginatedDepts.map((dept) => {
-                      const isDeptApproved = currentApproval.isApproved || dept.status === 'APPROVED';
-
                       return (
-                        <TableRow key={dept.id} hover>
+                        <TableRow
+                          key={dept.id}
+                          hover
+                          onClick={() => setDeptDetailModal({ open: true, dept })}
+                          sx={{
+                            cursor: 'pointer',
+                            '&:hover': {
+                              bgcolor: 'action.hover',
+                            },
+                          }}
+                        >
                           <TableCell>
                             <Stack direction="row" spacing={1} alignItems="center">
                               <ApartmentRoundedIcon color="action" />
@@ -757,8 +879,8 @@ export default function AgencyApprovalView() {
                           </TableCell>
 
                           <TableCell align="center">
-                            <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.dark' }}>
-                              {dept.avgScore}đ
+                            <Typography variant="body2" sx={{ fontWeight: 700, color: dept.avgScore !== null ? 'primary.dark' : 'text.disabled' }}>
+                              {dept.avgScore !== null ? `${dept.avgScore}đ` : '-'}
                             </Typography>
                           </TableCell>
 
@@ -770,7 +892,7 @@ export default function AgencyApprovalView() {
                           </TableCell>
 
                           <TableCell align="center">
-                            {isDeptApproved ? (
+                            {dept.status === 'APPROVED' ? (
                               <Chip
                                 icon={<CheckCircleRoundedIcon />}
                                 label="Đã phê duyệt"
@@ -778,14 +900,47 @@ export default function AgencyApprovalView() {
                                 size="small"
                                 sx={{ fontWeight: 600, fontSize: '0.75rem' }}
                               />
-                            ) : (
+                            ) : dept.status === 'PENDING_DEPT_EVALUATION' ? (
                               <Chip
-                                label="Chờ Hội đồng duyệt"
+                                icon={<HourglassEmptyRoundedIcon />}
+                                label="Đang chờ đánh giá cấp phòng"
                                 color="warning"
                                 size="small"
                                 sx={{ fontWeight: 600, fontSize: '0.75rem' }}
                               />
+                            ) : (
+                              <Chip
+                                icon={<GavelRoundedIcon />}
+                                label="Chờ Hội đồng duyệt"
+                                color="info"
+                                size="small"
+                                sx={{ fontWeight: 600, fontSize: '0.75rem' }}
+                              />
                             )}
+                          </TableCell>
+
+                          <TableCell align="center">
+                            <Tooltip title="Xem chi tiết danh sách và trạng thái cán bộ">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<VisibilityRoundedIcon />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeptDetailModal({ open: true, dept });
+                                }}
+                                sx={{
+                                  textTransform: 'none',
+                                  borderRadius: 1.5,
+                                  py: 0.3,
+                                  px: 1,
+                                  fontSize: '0.75rem',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Chi tiết
+                              </Button>
+                            </Tooltip>
                           </TableCell>
                         </TableRow>
                       );
@@ -879,6 +1034,240 @@ export default function AgencyApprovalView() {
         staffList={allAvailableStaffs}
         departments={departments}
       />
+
+      {/* Modal Xem chi tiết thành viên và trạng thái đánh giá cấp phòng */}
+      <Dialog
+        open={deptDetailModal.open}
+        onClose={() => setDeptDetailModal({ open: false, dept: null })}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{
+          sx: { borderRadius: 2.5, minHeight: '50vh' },
+        }}
+      >
+        <DialogTitle sx={{ m: 0, p: 2.5, bgcolor: 'background.paper', borderBottom: '1px solid', borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <ApartmentRoundedIcon color="primary" sx={{ fontSize: 32 }} />
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
+                {deptDetailModal.dept?.name}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Chi tiết kết quả đánh giá KPI & Trạng thái phê duyệt cán bộ ({selectedPeriodLabel}) • Trưởng phòng: <strong>{deptDetailModal.dept?.head}</strong>
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton onClick={() => setDeptDetailModal({ open: false, dept: null })}>
+            <CloseRoundedIcon />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 2.5 }}>
+          {/* Summary Chips banner */}
+          {deptDetailModal.dept && (
+            <Box sx={{ mb: 2.5, p: 2, bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : '#f8fafc', borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
+              <Grid container spacing={2} alignItems="center">
+                <Grid item xs={12} sm={6} md={3}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Tổng nhân sự:</Typography>
+                  <Typography variant="body1" sx={{ fontWeight: 700 }}>{deptDetailModal.dept.staffCount} cán bộ, công chức</Typography>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Điểm TB phòng:</Typography>
+                  <Typography variant="body1" sx={{ fontWeight: 700, color: deptDetailModal.dept.avgScore !== null ? 'primary.main' : 'text.disabled' }}>
+                    {deptDetailModal.dept.avgScore !== null ? `${deptDetailModal.dept.avgScore} / 100đ` : '-'}
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Tỷ lệ hoàn thành nhiệm vụ:</Typography>
+                  <Typography variant="body1" sx={{ fontWeight: 700, color: deptDetailModal.dept.hasTasks ? 'success.main' : 'text.disabled' }}>
+                    {deptDetailModal.dept.hasTasks ? `${deptDetailModal.dept.completionRate}%` : '0%'}
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Trạng thái thẩm định phòng:</Typography>
+                  {deptDetailModal.dept.status === 'APPROVED' ? (
+                    <Chip icon={<CheckCircleRoundedIcon />} label="Đã phê duyệt" color="success" size="small" sx={{ fontWeight: 700 }} />
+                  ) : deptDetailModal.dept.status === 'PENDING_DEPT_EVALUATION' ? (
+                    <Chip icon={<HourglassEmptyRoundedIcon />} label="Đang chờ đánh giá cấp phòng" color="warning" size="small" sx={{ fontWeight: 700 }} />
+                  ) : (
+                    <Chip icon={<GavelRoundedIcon />} label="Chờ Hội đồng duyệt" color="info" size="small" sx={{ fontWeight: 700 }} />
+                  )}
+                </Grid>
+              </Grid>
+            </Box>
+          )}
+
+          {/* Members Table */}
+          {deptDetailModal.dept && (
+            <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+              <Table size="small">
+                <TableHead sx={{ bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : '#f1f5f9' }}>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700 }}>Họ tên & Mã cán bộ</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Chức danh / VTVL</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="center">Gửi tự đánh giá</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="center">Điểm KPI (70đ)</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="center">Phẩm chất (30đ)</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="center">Tổng điểm & Xếp loại</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="center">Trạng thái phê duyệt</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>Người phê duyệt trực tiếp</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {deptDetailModal.dept.deptStaffList.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} align="center" sx={{ py: 4 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Phòng ban hiện chưa có cán bộ, chuyên viên thuộc diện đánh giá KPI (ngoại trừ tài khoản Quản trị hệ thống).
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    deptDetailModal.dept.deptStaffList.map((member) => {
+                      const memberTasks = assignedTasks.filter((t) => {
+                        const matchesStaff = (t.staffId && t.staffId === member.id) ||
+                                             (t.staffName && t.staffName.toLowerCase().trim() === member.name.toLowerCase().trim());
+                        if (!matchesStaff) return false;
+                        if (selectedPeriod === 'YEAR_2026') return true;
+                        return t.period === selectedPeriod || (!t.period && selectedPeriod === 'Q4_2026');
+                      });
+                      const hasMemberTasks = memberTasks.length > 0;
+
+                      const memberEval = evaluations.find(
+                        (e) => ((e.staffId && e.staffId === member.id) || (e.staffName && e.staffName.toLowerCase().trim() === member.name.toLowerCase().trim())) &&
+                               (e.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && (e.period === 'YEAR_2026' || e.period === 'Q3_2026')))
+                      );
+
+                      const isApproved = Boolean(memberEval && (memberEval.status === 'APPROVED' || memberEval.approved === true));
+                      const isPendingApproval = Boolean(
+                        memberEval && !isApproved && (memberEval.status === 'PENDING_DEPT_LEADER' || memberEval.status === 'PENDING_BAN_LEADER')
+                      );
+                      const hasSubmitted = isApproved || isPendingApproval || Boolean(memberEval?.ethicsScore !== undefined && memberEval?.ethicsScore !== null);
+                      const hasNoTasks = !hasMemberTasks && !hasSubmitted && (!memberEval || memberEval.totalScore === undefined || memberEval.totalScore === null);
+
+                      const supervisor = getDirectSupervisorForStaff(member, currentUser, departments, allAvailableStaffs);
+                      const roleBadge = getUserRoleBadge(member);
+
+                      return (
+                        <TableRow key={member.id} hover>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>{member.name}</Typography>
+                            <Typography variant="caption" color="text.secondary">{member.employeeCode || member.email}</Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Chip label={roleBadge.label} color={roleBadge.color} size="small" sx={{ fontWeight: 600, height: 20, fontSize: '0.7rem' }} />
+                            <Typography variant="caption" sx={{ display: 'block', mt: 0.3 }} color="text.secondary">
+                              {member.title}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="center">
+                            {hasNoTasks ? (
+                              <Chip label="Chưa có nhiệm vụ" size="small" variant="outlined" sx={{ color: 'text.secondary', borderColor: '#e2e8f0', bgcolor: 'transparent' }} />
+                            ) : hasSubmitted ? (
+                              <Chip label="Đã gửi đánh giá" color="success" size="small" variant="outlined" sx={{ fontWeight: 600 }} />
+                            ) : (
+                              <Chip label="Chưa tự chấm" size="small" variant="outlined" sx={{ color: 'text.secondary', borderColor: '#cbd5e1' }} />
+                            )}
+                          </TableCell>
+                          <TableCell align="center">
+                            {hasNoTasks ? (
+                              <Typography variant="body2" color="text.secondary">--/70</Typography>
+                            ) : memberEval?.autoKPIScore !== undefined && memberEval?.autoKPIScore !== null ? (
+                              <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                                {Number(memberEval.autoKPIScore).toFixed(1)}/70
+                              </Typography>
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">--/70</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell align="center">
+                            {hasNoTasks ? (
+                              <Typography variant="caption" color="text.secondary">--/30</Typography>
+                            ) : hasSubmitted ? (
+                              <Box>
+                                <Typography variant="caption" sx={{ display: 'block' }}>
+                                  Tự chấm: <strong>{memberEval?.ethicsScore ?? '--'}/30</strong>
+                                </Typography>
+                                <Typography variant="caption" sx={{ display: 'block', color: 'primary.dark' }}>
+                                  Sếp chấm: <strong>{memberEval?.bossEthicsScore ?? '--'}/30</strong>
+                                </Typography>
+                              </Box>
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">--/30</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell align="center">
+                            {hasNoTasks ? (
+                              <Typography variant="caption" color="text.secondary">Chưa có nhiệm vụ</Typography>
+                            ) : memberEval?.totalScore !== undefined && memberEval?.totalScore !== null ? (
+                              <Box>
+                                <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                                  {Number(memberEval.totalScore).toFixed(1)} / 100đ
+                                </Typography>
+                                <Typography variant="caption" color="primary.main" sx={{ fontWeight: 600, display: 'block', fontSize: '0.72rem' }}>
+                                  {memberEval.grade}
+                                </Typography>
+                              </Box>
+                            ) : isPendingApproval ? (
+                              <Typography variant="caption" color="warning.main" sx={{ fontWeight: 600 }}>Chờ phê duyệt</Typography>
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">Chờ đánh giá</Typography>
+                            )}
+                          </TableCell>
+                          <TableCell align="center">
+                            {hasNoTasks ? (
+                              <Chip
+                                label="Chưa có nhiệm vụ"
+                                size="small"
+                                variant="outlined"
+                                sx={{ color: 'text.secondary', borderColor: '#e2e8f0' }}
+                              />
+                            ) : isApproved ? (
+                              <Chip
+                                icon={<CheckCircleRoundedIcon />}
+                                label="Đã phê duyệt"
+                                color="success"
+                                size="small"
+                                sx={{ fontWeight: 700 }}
+                              />
+                            ) : isPendingApproval ? (
+                              <Chip
+                                icon={<HourglassEmptyRoundedIcon />}
+                                label="Đang chờ phê duyệt"
+                                color="warning"
+                                size="small"
+                                sx={{ fontWeight: 700 }}
+                              />
+                            ) : (
+                              <Chip
+                                label="Chưa nộp đánh giá"
+                                size="small"
+                                variant="outlined"
+                                color="warning"
+                                sx={{ fontWeight: 600 }}
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8rem' }}>
+                              {supervisor}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Button onClick={() => setDeptDetailModal({ open: false, dept: null })} variant="contained" sx={{ textTransform: 'none', fontWeight: 600 }}>
+            Đóng
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

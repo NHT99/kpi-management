@@ -44,8 +44,8 @@ import { useAuth } from '../../rbac/AuthContext';
 import { INITIAL_OKRS, INITIAL_ASSIGNED_TASKS, INITIAL_MASTER_KPIS, KPI_DATA_VERSION } from '../data/mockKPIData';
 import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
-import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared } from '../../rbac/roles';
-import { MOCK_USERS } from '../../rbac/users';
+import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
+import { MOCK_USERS, getAllUsers } from '../../rbac/users';
 import { logAction } from '../utils/auditLogger';
 import {
   getCurrentQuarterInfo,
@@ -118,7 +118,7 @@ export default function TaskAndOKRAllocation() {
       });
     });
 
-    MOCK_USERS.forEach((u) => {
+    getAllUsers().forEach((u) => {
       if (!map.has(u.id)) {
         map.set(u.id, {
           id: u.id,
@@ -278,15 +278,15 @@ export default function TaskAndOKRAllocation() {
     const taskDeptName = assignee?.department || task.staffDept;
 
     if (isBanLeader) {
-      if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+      if (isDeputyBanLeader(currentUser)) {
         // Phó Trưởng ban: Chỉ phê duyệt nhiệm vụ tự đề xuất của TRƯỞNG PHÒNG thuộc phòng mình phụ trách
         const isManagedDept =
           isSameDept(taskDeptId, effectiveManagedDept, departments) ||
           isSameDept(taskDeptName, effectiveManagedDept, departments);
         return isTaskAssignedToTrueDeptHead && isManagedDept;
       }
-      // Trưởng ban (managedDeptId === 'ALL'): Phê duyệt cho Phó Trưởng ban (hoặc Trưởng phòng nếu có)
-      return assignee?.role === ROLES.BAN_LEADER || isTaskAssignedToTrueDeptHead;
+      // Trưởng ban (isAgencyHead): Phê duyệt cho PHÓ TRƯỞNG BAN (và cả Trưởng phòng nếu cần)
+      return (assignee?.role === ROLES.BAN_LEADER && !isAgencyHead(assignee)) || isTaskAssignedToTrueDeptHead;
     }
 
     if (isDeptHead) {

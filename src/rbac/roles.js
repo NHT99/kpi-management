@@ -225,9 +225,46 @@ export function isDeputyDeptHead(userOrTitle) {
  */
 export function isTrueDeptHead(user) {
   if (!user) return false;
+  if (isAgencyHead(user)) return false;
+  if (isDeputyBanLeader(user)) return false;
+  if (isDeputyDeptHead(user)) return false;
+
+  const title = (
+    typeof user === 'string'
+      ? user
+      : (user.title || user.vtvlTitle || user.name || '')
+  ).toLowerCase();
+
+  const isDeptHeadTitle =
+    (title.includes('trưởng phòng') || title.includes('truong phong') || title.includes('chánh văn phòng') || title.includes('chánh vp') || title.includes('chanh van phong')) &&
+    !isDeputyDeptHead(user);
+
   const isDeptRole = user.role === ROLES.DEPT_HEAD || user.role === ROLES.DEPT_LEADER;
-  if (!isDeptRole) return false;
-  return !isDeputyDeptHead(user);
+  return isDeptRole || isDeptHeadTitle;
+}
+
+export function isAgencyHead(user) {
+  if (!user) return false;
+  const title = (user.title || '').toLowerCase();
+  const name = (user.name || '').toLowerCase();
+  const username = (user.username || '').toLowerCase();
+  const isDeputy = title.includes('phó') || title.includes('pho');
+  return (
+    user.id === 'user_leadership_head' ||
+    username === 'hung.tranduc' ||
+    name.includes('trần đức hưng') ||
+    (!isDeputy && (user.managedDeptId === 'ALL' || (title.includes('trưởng ban') && !isDeputy)))
+  );
+}
+
+export function isDeputyBanLeader(user) {
+  if (!user) return false;
+  if (isAgencyHead(user)) return false;
+  const title = (user.title || '').toLowerCase();
+  const isDeputy = title.includes('phó') || title.includes('pho');
+  const isBanLeaderTitle = isDeputy && (title.includes('trưởng ban') || title.includes('truong ban') || title.includes('lãnh đạo ban') || title.includes('bvctnb'));
+  if (user.role === ROLES.BAN_LEADER) return true;
+  return isBanLeaderTitle;
 }
 
 /**
@@ -244,52 +281,45 @@ export function getDirectSupervisorForStaff(targetStaff, currentUser, department
 
   // 1. Nếu người nhận là Ban Leader (Phó Trưởng ban) -> Cấp trên là Trưởng ban
   if (targetStaff.role === ROLES.BAN_LEADER) {
-    const agencyHead = allStaffs.find(
-      (s) =>
-        s.role === ROLES.BAN_LEADER &&
-        (s.managedDeptId === 'ALL' || (s.title && s.title.toLowerCase().includes('trưởng ban') && !s.title.toLowerCase().includes('phó')))
-    );
+    if (isAgencyHead(targetStaff)) {
+      return 'Hội đồng Ban / Trưởng ban';
+    }
+    const agencyHead = allStaffs.find((s) => isAgencyHead(s));
     return agencyHead
       ? `${agencyHead.name} (${agencyHead.title || 'Trưởng ban'})`
       : 'Trưởng ban / Chủ tịch Hội đồng';
   }
 
-  // 2. Nếu người nhận là Trưởng phòng thực thụ (isTrueDeptHead) -> Cấp trên là Lãnh đạo Ban phụ trách phòng đó
+  // 2. Nếu người nhận là Trưởng phòng thực thụ (isTrueDeptHead) -> Cấp trên là Phó Trưởng ban phụ trách phòng đó!
   if (isTrueDeptHead(targetStaff)) {
-    // Nếu người đang xem chính là Lãnh đạo Ban phụ trách phòng này
-    if (currentUser?.role === ROLES.BAN_LEADER) {
-      return `${currentUser.name} (${currentUser.title || 'Lãnh đạo Ban phụ trách'})`;
-    }
     // Tìm Phó Trưởng ban được phân công phụ trách phòng của targetStaff
-    const assignedBanLeader = allStaffs.find(
-      (s) =>
-        s.role === ROLES.BAN_LEADER &&
-        s.managedDeptId &&
-        s.managedDeptId !== 'ALL' &&
-        isSameDept(s.managedDeptId, staffDeptId, departments)
-    );
+    const assignedBanLeader = allStaffs.find((s) => {
+      if (s.role !== ROLES.BAN_LEADER && !isDeputyBanLeader(s)) return false;
+      if (isAgencyHead(s)) return false;
+      const leaderDept = getEffectiveManagedDeptId(s, departments);
+      if (leaderDept && leaderDept !== 'ALL' && isSameDept(leaderDept, staffDeptId, departments)) {
+        return true;
+      }
+      return (
+        isSameDept(s.managedDeptId, staffDeptId, departments) ||
+        isSameDept(s.deptId || s.department, staffDeptId, departments) ||
+        (s.title && isSameDept(s.title, staffDeptId, departments))
+      );
+    });
+
     if (assignedBanLeader) {
-      return `${assignedBanLeader.name} (${assignedBanLeader.title || 'Lãnh đạo Ban phụ trách'})`;
+      return `${assignedBanLeader.name} (${assignedBanLeader.title || 'Phó Trưởng ban phụ trách'})`;
     }
-    // Nếu phòng không có Phó ban riêng, lấy Trưởng ban
-    const agencyHead = allStaffs.find(
-      (s) =>
-        s.role === ROLES.BAN_LEADER &&
-        (s.managedDeptId === 'ALL' || (s.title && s.title.toLowerCase().includes('trưởng ban') && !s.title.toLowerCase().includes('phó')))
-    );
+
+    // Nếu phòng không có Phó ban riêng, cấp trên là Trưởng ban
+    const agencyHead = allStaffs.find((s) => isAgencyHead(s));
     return agencyHead
-      ? `${agencyHead.name} (${agencyHead.title || 'Trưởng ban'})`
-      : 'Lãnh đạo Ban phụ trách';
+      ? `${agencyHead.name} (${agencyHead.title || 'Trưởng ban / Chủ tịch Hội đồng'})`
+      : 'Trưởng ban / Chủ tịch Hội đồng';
   }
 
   // 3. Nếu người nhận là Phó phòng (isDeputyDeptHead) HOẶC Chuyên viên (STAFF)
   // Cấp trên trực tiếp là TRƯỞNG PHÒNG / CHÁNH VĂN PHÒNG của phòng đó!
-  // Nếu người đang thao tác chính là Trưởng phòng của phòng này
-  if (currentUser && isTrueDeptHead(currentUser) && isSameDept(currentUser.deptId || currentUser.department, staffDeptId, departments)) {
-    return `${currentUser.name} (${currentUser.title || 'Trưởng phòng'})`;
-  }
-
-  // Tìm Trưởng phòng của phòng này từ danh sách cán bộ
   const deptHead = allStaffs.find(
     (s) =>
       isTrueDeptHead(s) &&
@@ -300,7 +330,7 @@ export function getDirectSupervisorForStaff(targetStaff, currentUser, department
     return `${deptHead.name} (${deptHead.title || 'Trưởng phòng'})`;
   }
 
-  // Fallback động theo tên phòng (tuyệt đối không gán cứng tên của bất kỳ ai)
+  // Fallback động theo tên phòng
   const deptObj = departments.find((d) => isSameDept(d.id, staffDeptId, departments));
   return deptObj ? `Trưởng phòng (${deptObj.name})` : 'Trưởng phòng chuyên môn phụ trách';
 }

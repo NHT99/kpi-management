@@ -4,6 +4,7 @@ import Breadcrumbs, { breadcrumbsClasses } from '@mui/material/Breadcrumbs';
 import NavigateNextRoundedIcon from '@mui/icons-material/NavigateNextRounded';
 import { useNavigation, NAV_TABS } from '../../kpi/NavigationContext';
 import { useAuth } from '../../rbac/AuthContext';
+import { ROLES, isAgencyHead } from '../../rbac/roles';
 
 const StyledBreadcrumbs = styled(Breadcrumbs)(({ theme }) => ({
   margin: theme.spacing(1, 0),
@@ -18,11 +19,18 @@ const StyledBreadcrumbs = styled(Breadcrumbs)(({ theme }) => ({
 
 export default function NavbarBreadcrumbs() {
   const { activeTab } = useNavigation();
-  const { roleDetails } = useAuth();
+  const { roleDetails, currentUser, role } = useAuth();
+  const isHead = isAgencyHead(currentUser);
+
+  const getDeptTabLabel = () => {
+    if (isHead) return 'Thẩm định & Đánh giá Phó Trưởng ban';
+    if (role === ROLES.BAN_LEADER) return 'Thẩm định & Đánh giá Trưởng phòng';
+    return 'Đánh giá & Tổng hợp KPI Phòng';
+  };
 
   const tabLabels = {
     [NAV_TABS.PERSONAL]: 'KPI & Tiến độ cá nhân',
-    [NAV_TABS.DEPARTMENT]: 'Đánh giá & Tổng hợp KPI Phòng',
+    [NAV_TABS.DEPARTMENT]: getDeptTabLabel(),
     [NAV_TABS.AGENCY]: 'Thẩm định & Phê duyệt cấp Ban',
     [NAV_TABS.RBAC_MATRIX]: 'Ma trận phân quyền RBAC',
     [NAV_TABS.OVERVIEW]: 'Tổng quan hệ thống KPI',

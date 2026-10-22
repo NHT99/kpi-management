@@ -340,10 +340,10 @@ export default function RBACMatrixView() {
           <SecurityRoundedIcon sx={{ fontSize: 36, color: 'primary.main' }} />
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Hệ thống Phân quyền khép kín (RBAC) - 5 Nhóm Vai Trò & 9 Chức Năng
+              Bảng giới thiệu Phân quyền (RBAC) - 5 Nhóm Vai Trò & 9 Chức Năng
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Phân định rõ ràng chức năng nhiệm vụ từ Quản trị hệ thống, Quản trị Nhân sự, Lãnh đạo Ban, Lãnh đạo Phòng đến Cán bộ chuyên viên.
+              Phân định chức năng nhiệm vụ từ Quản trị hệ thống, Quản trị Nhân sự, Lãnh đạo Ban, Lãnh đạo Phòng đến Cán bộ chuyên viên.
             </Typography>
           </Box>
         </Stack>
@@ -407,9 +407,9 @@ export default function RBACMatrixView() {
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Bảng Ma trận Phân quyền Chi tiết (Role-Permission Matrix)
             </Typography>
-            <Typography variant="caption" color="text.secondary">
+            {/* <Typography variant="caption" color="text.secondary">
               Bao phủ 100% yêu cầu 9 nhóm chức năng nghiệp vụ của hệ thống quản lý đánh giá KPI công chức
-            </Typography>
+            </Typography> */}
           </Box>
           <TextField
             size="small"

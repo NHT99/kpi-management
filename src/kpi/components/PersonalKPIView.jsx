@@ -51,7 +51,8 @@ import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownR
 
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
-import { ROLES, isTrueDeptHead, isDeputyDeptHead, isSameDept, getDirectSupervisorForStaff, getOkrDept, getEffectiveManagedDeptId } from '../../rbac/roles';
+import { getAllUsers } from '../../rbac/users';
+import { ROLES, isTrueDeptHead, isDeputyDeptHead, isSameDept, getDirectSupervisorForStaff, getOkrDept, getEffectiveManagedDeptId, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useToast } from '../hooks/useToast';
 import { INITIAL_ASSIGNED_TASKS, INITIAL_OKRS, INITIAL_MASTER_KPIS, INITIAL_EVALUATIONS, KPI_DATA_VERSION } from '../data/mockKPIData';
@@ -135,10 +136,33 @@ export default function PersonalKPIView() {
   const [userD2Score, setUserD2Score] = useState(100); // D2 (Triển khai): 100% hoặc 50%
   const [userD3Score, setUserD3Score] = useState(100); // D3 (Đoàn kết): 100% hoặc 50%
 
+  // Merge stored staffs with dynamic accounts from localStorage & MOCK_USERS
+  const allStaffs = useMemo(() => {
+    const userList = getAllUsers();
+    const merged = [...staffs];
+    userList.forEach((u) => {
+      if (!merged.some((s) => s.id === u.id || s.username === u.username || s.name === u.name)) {
+        merged.push({
+          id: u.id,
+          name: u.name,
+          username: u.username,
+          title: u.title,
+          deptId: u.deptId,
+          department: u.department,
+          role: u.role,
+          employeeCode: u.employeeCode,
+          managedDeptId: u.managedDeptId,
+          status: u.status || 'ACTIVE',
+        });
+      }
+    });
+    return merged;
+  }, [staffs]);
+
   // Người phê duyệt trực tiếp của người dùng hiện tại (100% động theo phòng ban & chức vụ)
   const currentSupervisor = useMemo(() => {
-    return getDirectSupervisorForStaff(currentUser, currentUser, departments, staffs);
-  }, [currentUser, departments, staffs]);
+    return getDirectSupervisorForStaff(currentUser, currentUser, departments, allStaffs);
+  }, [currentUser, departments, allStaffs]);
 
   // Lấy danh sách cấp dưới trực tiếp để tính D1
   const subordinates = useMemo(() => {
@@ -625,7 +649,7 @@ export default function PersonalKPIView() {
     }
 
     // Xác định người duyệt theo phân cấp chuẩn (100% động theo phòng ban & chức vụ, tuyệt đối không gán cứng tên ai):
-    const assignedApprover = getDirectSupervisorForStaff(currentUser, currentUser, departments, staffs);
+    const assignedApprover = getDirectSupervisorForStaff(currentUser, currentUser, departments, allStaffs);
 
     const newProposedTask = {
       id: `task-prop-${Date.now()}`,
@@ -642,13 +666,13 @@ export default function PersonalKPIView() {
       deadline: taskDeadline,
       period: norm.periodKey,
       quarter: norm.quarterDisplay,
-      type: proposeForm.okrId ? 'OKR' : (isBanLeader ? 'Trọng tâm Lãnh đạo' : 'Thường xuyên VTVL'),
+      type: proposeForm.okrId ? 'OKR' : (isAgencyHead(currentUser) ? 'Trọng tâm Lãnh đạo' : 'Thường xuyên VTVL'),
       okrId: proposeForm.okrId || null,
-      status: isBanLeader ? 'Mới tạo' : 'Chờ duyệt',
+      status: isAgencyHead(currentUser) ? 'Mới tạo' : 'Chờ duyệt',
       currentValue: 0,
       actualQty: 0,
       progress: 0,
-      approvalStatus: isBanLeader ? 'Đã duyệt' : 'Chờ duyệt',
+      approvalStatus: isAgencyHead(currentUser) ? 'Đã duyệt' : 'Chờ duyệt',
       isSelfAssigned: true,
       approverName: assignedApprover,
       multiplier: Number(proposeForm.multiplier) || 1.0,
@@ -662,7 +686,7 @@ export default function PersonalKPIView() {
           timestamp: new Date().toISOString(),
           actor: currentUser.name,
           role: role,
-          action: isBanLeader ? 'Khởi tạo nhiệm vụ Lãnh đạo' : 'Đề xuất nhiệm vụ mới',
+          action: isAgencyHead(currentUser) ? 'Khởi tạo nhiệm vụ Lãnh đạo' : 'Đề xuất nhiệm vụ mới',
           note: `Khởi tạo: Chỉ tiêu ${proposeForm.targetQty} ${proposeForm.unit}. Hệ số quy đổi: x${proposeForm.multiplier || 1.0}. Người duyệt: ${assignedApprover}`
         }
       ]
@@ -671,14 +695,14 @@ export default function PersonalKPIView() {
     setAssignedTasks((prev) => [newProposedTask, ...(Array.isArray(prev) ? prev : [])]);
 
     logAction(
-      isBanLeader ? 'Khởi tạo KPI cá nhân' : 'Đề xuất nhiệm vụ mới',
+      isAgencyHead(currentUser) ? 'Khởi tạo KPI cá nhân' : 'Đề xuất nhiệm vụ mới',
       currentUser,
       `Tạo nhiệm vụ: ${proposeForm.taskName} (${proposeForm.targetQty} ${proposeForm.unit})`,
       'KPI Cá nhân'
     );
 
     showToast(
-      isBanLeader
+      isAgencyHead(currentUser)
         ? 'Đã tạo nhiệm vụ thành công!'
         : `Đã gửi đề xuất nhiệm vụ đến ${assignedApprover} duyệt!`,
       'success'
@@ -1865,23 +1889,31 @@ export default function PersonalKPIView() {
       {/* Modal: Đề xuất / Tự tạo nhiệm vụ mới */}
       <Dialog open={proposeDialogOpen} onClose={() => setProposeDialogOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ fontWeight: 700 }}>
-          {role === ROLES.BAN_LEADER ? 'Tự tạo Nhiệm vụ & KPI cá nhân (Lãnh đạo Ban)' : 'Đề xuất Nhiệm vụ & KPI cá nhân mới'}
+          {isAgencyHead(currentUser)
+            ? 'Tự tạo Nhiệm vụ & KPI cá nhân (Trưởng ban)'
+            : role === ROLES.BAN_LEADER
+              ? 'Đề xuất Nhiệm vụ & KPI cá nhân (Phó Trưởng ban)'
+              : 'Đề xuất Nhiệm vụ & KPI cá nhân mới'}
         </DialogTitle>
         <DialogContent dividers>
-          {role === ROLES.BAN_LEADER && (
+          {isAgencyHead(currentUser) && (
             <Alert severity="info" sx={{ mb: 2 }}>
-              Nhiệm vụ cá nhân do Lãnh đạo Ban tự tạo sẽ có trạng thái ban đầu là <strong>&quot;Mới tạo&quot;</strong>. Sau 1 giờ, hệ thống sẽ tự động chuyển sang <strong>&quot;Đang tiến hành&quot;</strong>. Khi cập nhật tiến độ khối lượng thực tế, trạng thái sẽ là <strong>&quot;Đang tiến hành&quot;</strong>.
+              Nhiệm vụ cá nhân do Trưởng ban tự tạo sẽ có trạng thái ban đầu là <strong>&quot;Mới tạo&quot;</strong>. Sau 1 giờ, hệ thống sẽ tự động chuyển sang <strong>&quot;Đang tiến hành&quot;</strong>. Khi cập nhật tiến độ khối lượng thực tế, trạng thái sẽ là <strong>&quot;Đang tiến hành&quot;</strong>.
             </Alert>
           )}
 
-          {role !== ROLES.BAN_LEADER && (
+          {!isAgencyHead(currentUser) && (
             <TextField
               fullWidth
               label="Người phê duyệt (Cấp trên trực tiếp)"
               InputLabelProps={{ shrink: true }}
               value={currentSupervisor}
               disabled
-              helperText="Hệ thống tự động gán người duyệt theo phân cấp quản lý trực tiếp của đơn vị"
+              helperText={
+                role === ROLES.BAN_LEADER
+                  ? 'Hệ thống tự động gán Trưởng ban là người phê duyệt nhiệm vụ cá nhân của Phó Trưởng ban'
+                  : 'Hệ thống tự động gán người duyệt theo phân cấp quản lý trực tiếp của đơn vị'
+              }
               sx={{ mb: 2 }}
             />
           )}
@@ -2165,7 +2197,7 @@ export default function PersonalKPIView() {
             Hủy bỏ
           </Button>
           <Button onClick={handleSavePropose} variant="contained" color="primary" sx={{ textTransform: 'none', fontWeight: 600 }}>
-            {role === ROLES.BAN_LEADER ? 'Tạo KPI cá nhân' : 'Gửi đề xuất'}
+            {isAgencyHead(currentUser) ? 'Tạo KPI cá nhân' : 'Gửi đề xuất'}
           </Button>
         </DialogActions>
       </Dialog>

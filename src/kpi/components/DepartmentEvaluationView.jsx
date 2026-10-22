@@ -42,7 +42,7 @@ import MenuItem from '@mui/material/MenuItem';
 
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
-import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead } from '../../rbac/roles';
+import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS } from '../data/organizationData';
@@ -94,31 +94,65 @@ export default function DepartmentEvaluationView() {
 
   // STRICT ISOLATION FILTERING:
   // - Nếu là TRƯỞNG PHÒNG thực thụ: Đánh giá toàn bộ cấp dưới (Chuyên viên VÀ Phó phòng) cùng phòng mình (loại trừ chính mình)
-  // - Nếu là LÃNH ĐẠO BAN (Phó Trưởng ban phụ trách / Trưởng ban): CHỈ đánh giá TRƯỞNG PHÒNG các phòng phụ trách
+  // - Nếu là TRƯỞNG BAN: Đánh giá các PHÓ TRƯỞNG BAN trực thuộc!
+  // - Nếu là PHÓ TRƯỞNG BAN phụ trách phòng: CHỈ đánh giá TRƯỞNG PHÒNG các phòng phụ trách
   const targetStaffList = useMemo(() => {
     let list = allAvailableStaffs;
 
     if (isTrueDeptHead(currentUser)) {
+      // TRƯỞNG PHÒNG: Chỉ đánh giá Chuyên viên / Phó phòng trong phòng mình
+      // TUYỆT ĐỐI KHÔNG đánh giá: Phó Trưởng ban, Trưởng ban, Super Admin, HR Admin
       list = list.filter(
         (s) =>
           s.id !== currentUser.id &&
+          s.role !== ROLES.BAN_LEADER &&
+          !isAgencyHead(s) &&
+          !isDeputyBanLeader(s) &&
+          s.role !== ROLES.SUPER_ADMIN &&
+          s.role !== ROLES.HR_ADMIN &&
           !isTrueDeptHead(s) &&
           isSameDept(s.deptId || s.department, currentUser.deptId || currentUser.department, departments)
       );
     } else if (role === ROLES.BAN_LEADER) {
-      const effectiveManagedDept = getEffectiveManagedDeptId(currentUser, departments);
-      if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+      if (isAgencyHead(currentUser)) {
+        // TRƯỞNG BAN: Đánh giá các PHÓ TRƯỞNG BAN trực thuộc!
         list = list.filter(
           (s) =>
-            isTrueDeptHead(s) &&
-            isSameDept(s.deptId || s.department, effectiveManagedDept, departments)
+            s.id !== currentUser.id &&
+            s.role !== ROLES.SUPER_ADMIN &&
+            s.role !== ROLES.HR_ADMIN &&
+            (isDeputyBanLeader(s) || (s.title && s.title.toLowerCase().includes('phó')))
         );
       } else {
-        list = list.filter((s) => isTrueDeptHead(s));
+        // PHÓ TRƯỞNG BAN: Đánh giá TRƯỞNG PHÒNG các phòng phụ trách
+        const effectiveManagedDept = getEffectiveManagedDeptId(currentUser, departments);
+        if (effectiveManagedDept && effectiveManagedDept !== 'ALL') {
+          list = list.filter(
+            (s) =>
+              s.id !== currentUser.id &&
+              s.role !== ROLES.SUPER_ADMIN &&
+              s.role !== ROLES.HR_ADMIN &&
+              isTrueDeptHead(s) &&
+              isSameDept(s.deptId || s.department, effectiveManagedDept, departments)
+          );
+        } else {
+          list = list.filter(
+            (s) =>
+              s.id !== currentUser.id &&
+              s.role !== ROLES.SUPER_ADMIN &&
+              s.role !== ROLES.HR_ADMIN &&
+              isTrueDeptHead(s)
+          );
+        }
       }
     } else {
       // HR_ADMIN / SUPER_ADMIN view
-      list = list.filter((s) => s.role === ROLES.STAFF || s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER);
+      list = list.filter(
+        (s) =>
+          s.role !== ROLES.SUPER_ADMIN &&
+          s.role !== ROLES.HR_ADMIN &&
+          (s.role === ROLES.STAFF || s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER)
+      );
     }
 
     return list;
@@ -143,6 +177,9 @@ export default function DepartmentEvaluationView() {
           }
           return taskNorm.periodKey === normSelected.periodKey;
         });
+
+      const taskCount = userTasks.length;
+      const hasTasks = taskCount > 0;
 
       // Find staff self-evaluation record
       const existingEval = evaluations.find(
@@ -200,6 +237,8 @@ export default function DepartmentEvaluationView() {
         name: staff.name,
         title: staff.title || 'Cán bộ',
         department: staff.department || 'Phòng chuyên môn',
+        taskCount,
+        hasTasks,
         autoKPIScore,
         selfEthicsScore,
         hasSubmittedSelfEval,
@@ -343,12 +382,18 @@ export default function DepartmentEvaluationView() {
               <AssessmentRoundedIcon color="primary" sx={{ fontSize: 36 }} />
               <Box>
                 <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
-                  {role === ROLES.BAN_LEADER ? 'Thẩm định & Phê duyệt Trưởng phòng (Cấp Ban)' : 'Đánh giá & Chốt điểm Cấp dưới trực tiếp'}
+                  {isAgencyHead(currentUser)
+                    ? 'Thẩm định & Phê duyệt Phó Trưởng ban'
+                    : role === ROLES.BAN_LEADER
+                      ? 'Thẩm định & Phê duyệt Trưởng phòng (Cấp Ban)'
+                      : 'Đánh giá & Chốt điểm Cấp dưới trực tiếp'}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {role === ROLES.BAN_LEADER
-                    ? 'Strict Isolation: Chỉ hiển thị danh sách Trưởng phòng trực thuộc các phòng do Ban lãnh đạo phụ trách.'
-                    : 'Strict Isolation: Chỉ hiển thị danh sách Chuyên viên / Cán bộ cùng phòng ban.'}
+                  {isAgencyHead(currentUser)
+                    ? 'Chi tiết danh sách Phó Trưởng ban trực thuộc Ban do Trưởng ban trực tiếp thẩm định & đánh giá.'
+                    : role === ROLES.BAN_LEADER
+                      ? 'Strict Isolation: Chỉ hiển thị danh sách Trưởng phòng trực thuộc các phòng do Ban lãnh đạo phụ trách.'
+                      : 'Strict Isolation: Chỉ hiển thị danh sách Chuyên viên / Cán bộ cùng phòng ban.'}
                 </Typography>
               </Box>
             </Box>
@@ -480,7 +525,11 @@ export default function DepartmentEvaluationView() {
                         </Stack>
                       </TableCell>
                       <TableCell>
-                        <Chip label={`${row.autoKPIScore.toFixed(1)} / 70đ`} color="primary" variant="outlined" size="small" sx={{ fontWeight: 700 }} />
+                        {row.hasTasks ? (
+                          <Chip label={`${row.autoKPIScore.toFixed(1)} / 70đ`} color="primary" variant="outlined" size="small" sx={{ fontWeight: 700 }} />
+                        ) : (
+                          <Chip label="-- / 70đ" size="small" variant="outlined" sx={{ color: 'text.secondary', borderColor: '#cbd5e1', fontWeight: 600 }} />
+                        )}
                       </TableCell>
                       <TableCell>
                         {row.hasSubmittedSelfEval && row.selfEthicsScore !== null ? (
@@ -514,7 +563,7 @@ export default function DepartmentEvaluationView() {
                                 -- / 100đ
                               </Typography>
                               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.72rem' }}>
-                                (Chờ cấp dưới nộp)
+                                {row.hasTasks ? '(Chờ cấp dưới nộp)' : '(Chưa có nhiệm vụ)'}
                               </Typography>
                             </>
                           )}
@@ -578,6 +627,18 @@ export default function DepartmentEvaluationView() {
                                 </Tooltip>
                               )}
                             </>
+                          ) : !row.hasTasks ? (
+                            <>
+                              <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+                                -- / 100đ
+                              </Typography>
+                              <Chip
+                                label="Chưa có nhiệm vụ"
+                                size="small"
+                                variant="outlined"
+                                sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600, mt: 0.5, color: 'text.secondary', borderColor: '#cbd5e1' }}
+                              />
+                            </>
                           ) : (
                             <>
                               <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
@@ -627,11 +688,11 @@ export default function DepartmentEvaluationView() {
                         ) : !row.hasSubmittedSelfEval ? (
                           <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
                             <Chip
-                              label="Chờ cấp dưới nộp"
+                              label={row.hasTasks ? "Chờ cấp dưới nộp" : "Chưa có nhiệm vụ"}
                               size="small"
                               variant="outlined"
-                              color="warning"
-                              sx={{ fontSize: '0.75rem', fontWeight: 600, height: 26 }}
+                              color={row.hasTasks ? "warning" : "default"}
+                              sx={{ fontSize: '0.75rem', fontWeight: 600, height: 26, borderColor: row.hasTasks ? undefined : '#cbd5e1' }}
                             />
                             <Button
                               size="small"
