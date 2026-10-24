@@ -800,7 +800,7 @@ export default function ExcelImportModal({ open, onClose, onImportSuccess }) {
                       return (
                         <Chip
                           key={g.code}
-                          label={`Nhóm ${g.code}: ${g.name.length > 25 ? g.name.slice(0, 25) + '...' : g.name} (${count})`}
+                          label={`Nhóm ${g.code}: ${g.name.replace(new RegExp(`^nhóm\\s+${g.code}[\\s:.-]*`, 'i'), '').trim() || g.name} (${count})`}
                           size="small"
                           color={selectedGroupFilter === g.code ? 'primary' : 'default'}
                           variant={selectedGroupFilter === g.code ? 'filled' : 'outlined'}

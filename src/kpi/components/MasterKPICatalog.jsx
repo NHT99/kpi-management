@@ -26,6 +26,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_MASTER_KPIS } from '../data/mockKPIData';
@@ -210,14 +211,27 @@ export default function MasterKPICatalog() {
       {ToastComponent}
 
       {/* Toolbar */}
-      <Card variant="outlined" sx={{ p: 2.5, mb: 3, borderRadius: 2 }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between" alignItems="center">
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ width: { xs: '100%', md: 'auto' }, flexGrow: 1 }} flexWrap="wrap" useFlexGap>
+      <Card variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 2 }}>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', md: 'center' }}
+        >
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1.5}
+            alignItems="center"
+            sx={{ width: { xs: '100%', md: 'auto' }, flexGrow: 1 }}
+            flexWrap="wrap"
+            useFlexGap
+          >
             <TextField
+              size="small"
               placeholder="Tìm theo mã (A.001...), tên công việc, sản phẩm..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              sx={{ width: { xs: '100%', sm: '300px' } }}
+              sx={{ minWidth: { xs: '100%', sm: 260 }, flexGrow: { sm: 1, md: 0 } }}
               InputProps={{
                 startAdornment: (
                   <SearchRoundedIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />
@@ -228,28 +242,157 @@ export default function MasterKPICatalog() {
             {uniqueGroups.length > 0 && (
               <TextField
                 select
+                size="small"
+                label="Lọc theo Nhóm"
                 value={filterGroup}
                 onChange={(e) => setFilterGroup(e.target.value)}
-                sx={{ minWidth: 200 }}
-                label="Lọc theo Nhóm"
-                InputLabelProps={{ shrink: true }}
+                sx={{
+                  minWidth: { xs: '100%', sm: 240 },
+                  maxWidth: { xs: '100%', sm: 340 },
+                  '& .MuiSelect-select': {
+                    display: 'block !important',
+                    whiteSpace: 'nowrap !important',
+                    overflow: 'hidden !important',
+                    textOverflow: 'ellipsis !important',
+                    pr: '38px !important',
+                  },
+                  '& .MuiSelect-icon': {
+                    right: 8,
+                    top: 'calc(50% - 11px)',
+                    color: 'text.secondary',
+                    pointerEvents: 'none',
+                  },
+                }}
+                slotProps={{
+                  select: {
+                    IconComponent: KeyboardArrowDownRoundedIcon,
+                    renderValue: (selected) => {
+                      if (!selected || selected === 'ALL') return `Tất cả các nhóm (${uniqueGroups.length})`;
+                      const found = uniqueGroups.find((g) => g.code === selected);
+                      if (!found) return selected;
+                      const cleaned = found.name.replace(new RegExp(`^nhóm\\s+${found.code}[\\s:.-]*`, 'i'), '').trim();
+                      return (
+                        <Box
+                          component="span"
+                          sx={{
+                            display: 'block',
+                            width: '100%',
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Nhóm {found.code} - {cleaned || found.name}
+                        </Box>
+                      );
+                    },
+                    MenuProps: {
+                      PaperProps: {
+                        sx: {
+                          maxHeight: 400,
+                          minWidth: 320,
+                          maxWidth: { xs: 320, sm: 550 },
+                        },
+                      },
+                    },
+                  },
+                }}
+                SelectProps={{
+                  IconComponent: KeyboardArrowDownRoundedIcon,
+                  renderValue: (selected) => {
+                    if (!selected || selected === 'ALL') return `Tất cả các nhóm (${uniqueGroups.length})`;
+                    const found = uniqueGroups.find((g) => g.code === selected);
+                    if (!found) return selected;
+                    const cleaned = found.name.replace(new RegExp(`^nhóm\\s+${found.code}[\\s:.-]*`, 'i'), '').trim();
+                    return (
+                      <Box
+                        component="span"
+                        sx={{
+                          display: 'block',
+                          width: '100%',
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Nhóm {found.code} - {cleaned || found.name}
+                      </Box>
+                    );
+                  },
+                  MenuProps: {
+                    PaperProps: {
+                      sx: {
+                        maxHeight: 400,
+                        minWidth: 320,
+                        maxWidth: { xs: 320, sm: 550 },
+                      },
+                    },
+                  },
+                }}
               >
-                <MenuItem value="ALL">Tất cả các nhóm ({uniqueGroups.length})</MenuItem>
-                {uniqueGroups.map((g) => (
-                  <MenuItem key={g.code} value={g.code}>
-                    Nhóm {g.code} ({g.name.length > 25 ? g.name.slice(0, 25) + '...' : g.name})
-                  </MenuItem>
-                ))}
+                <MenuItem value="ALL" sx={{ fontWeight: 600, py: 1.2 }}>
+                  Tất cả các nhóm ({uniqueGroups.length})
+                </MenuItem>
+                {uniqueGroups.map((g) => {
+                  const cleaned = g.name.replace(new RegExp(`^nhóm\\s+${g.code}[\\s:.-]*`, 'i'), '').trim();
+                  return (
+                    <MenuItem
+                      key={g.code}
+                      value={g.code}
+                      sx={{
+                        whiteSpace: 'normal',
+                        py: 1.2,
+                        borderBottom: '1px solid',
+                        borderColor: 'divider',
+                        '&:last-child': { borderBottom: 'none' },
+                      }}
+                    >
+                      <Box>
+                        <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                          Nhóm {g.code}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.3, lineHeight: 1.35 }}>
+                          {cleaned || g.name}
+                        </Typography>
+                      </Box>
+                    </MenuItem>
+                  );
+                })}
               </TextField>
             )}
 
             <TextField
               select
+              size="small"
               value={filterVTVL}
               onChange={(e) => setFilterVTVL(e.target.value)}
-              sx={{ minWidth: 200 }}
+              sx={{
+                minWidth: { xs: '100%', sm: 180 },
+                '& .MuiSelect-select': {
+                  display: 'block !important',
+                  whiteSpace: 'nowrap !important',
+                  overflow: 'hidden !important',
+                  textOverflow: 'ellipsis !important',
+                  pr: '38px !important',
+                },
+                '& .MuiSelect-icon': {
+                  right: 8,
+                  top: 'calc(50% - 11px)',
+                  color: 'text.secondary',
+                  pointerEvents: 'none',
+                },
+              }}
               label="Lọc theo VTVL"
-              InputLabelProps={{ shrink: true }}
+              slotProps={{
+                select: {
+                  IconComponent: KeyboardArrowDownRoundedIcon,
+                },
+              }}
+              SelectProps={{
+                IconComponent: KeyboardArrowDownRoundedIcon,
+              }}
             >
               <MenuItem value="ALL">Tất cả VTVL</MenuItem>
               {VTVL_OPTIONS.map((v) => (
@@ -260,13 +403,13 @@ export default function MasterKPICatalog() {
             </TextField>
           </Stack>
 
-          <Stack direction="row" spacing={1.5} sx={{ width: { xs: '100%', md: 'auto' }, justifyContent: 'flex-end' }}>
+          <Stack direction="row" spacing={1.5} sx={{ flexShrink: 0, alignItems: 'center' }}>
             <Button
               variant="outlined"
               color="primary"
               startIcon={<UploadFileRoundedIcon />}
               onClick={handleImportExcel}
-              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
+              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, whiteSpace: 'nowrap', height: 40 }}
             >
               Import Excel
             </Button>
@@ -275,7 +418,7 @@ export default function MasterKPICatalog() {
               variant="contained"
               startIcon={<AddRoundedIcon />}
               onClick={handleOpenAdd}
-              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2, whiteSpace: 'nowrap', height: 40 }}
             >
               Thêm KPI mẫu
             </Button>
