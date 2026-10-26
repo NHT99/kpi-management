@@ -12,6 +12,7 @@ import MenuItem from '@mui/material/MenuItem';
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
+import ListSubheader from '@mui/material/ListSubheader';
 import Button from '@mui/material/Button';
 import Avatar from '@mui/material/Avatar';
 import Tooltip from '@mui/material/Tooltip';
@@ -40,7 +41,8 @@ import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import DocumentGeneratorModal from './DocumentGeneratorModal';
 
 import { useAuth } from '../../rbac/AuthContext';
-import { ROLES } from '../../rbac/roles';
+import { ROLES, isSameDept } from '../../rbac/roles';
+import { getAllUsers } from '../../rbac/users';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/organizationData';
@@ -55,12 +57,14 @@ import {
 import {
   getStaffQuarterlyEvaluations,
   calculateQuarterlyAverage,
+  calculateAllStaffEvaluationsForPeriod,
 } from '../utils/yearWorkflowHelper';
-import { getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isTaskInPeriod, normalizePeriodAndQuarter } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
+import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 import * as XLSX from 'xlsx';
 
-const { allOptions: EVALUATION_PERIODS } = getFullYearQuarterOptions();
+const { allOptions: EVALUATION_PERIODS, groupedOptions } = getFullYearQuarterOptions();
 
 export default function KPIOverviewView() {
   const { currentUser, role } = useAuth();
@@ -82,182 +86,74 @@ export default function KPIOverviewView() {
   const [selectedDeptId, setSelectedDeptId] = useState(defaultDept);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Staff master data directly from stored staffs
-  const allAvailableStaffs = staffs;
-
-  // Compute all staff evaluations data
-  const allStaffCalculatedData = useMemo(() => {
-    const isYear = selectedPeriod.startsWith('YEAR_') || selectedPeriod.includes('Năm');
-    const targetYear = selectedPeriod.startsWith('YEAR_')
-      ? parseInt(selectedPeriod.replace('YEAR_', ''), 10) || 2026
-      : 2026;
-
-    return allAvailableStaffs.map((staff) => {
-      // Find staff tasks (loại bỏ các nhiệm vụ đang chờ duyệt)
-      const userTasks = assignedTasks
-        .filter((t) => t.staffId === staff.id || t.staffName === staff.name)
-        .filter((t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt')
-        .filter((t) => {
-          if (isYear) {
-            if (t.period) return t.period.endsWith(`_${targetYear}`);
-            if (t.deadline) {
-              const d = new Date(t.deadline);
-              return !isNaN(d.getTime()) && d.getFullYear() === targetYear;
-            }
-            return true;
-          }
-          if (t.period) return t.period === selectedPeriod;
-          if (t.deadline) {
-            const d = new Date(t.deadline);
-            if (!isNaN(d.getTime())) {
-              const q = Math.floor(d.getMonth() / 3) + 1;
-              const y = d.getFullYear();
-              return `Q${q}_${y}` === selectedPeriod;
-            }
-          }
-          return true;
+  // Master data: Hợp nhất toàn bộ cán bộ từ localStorage kpi_staffs, dynamic users từ Super Admin (kpi_users) và MOCK_USERS
+  const allAvailableStaffs = useMemo(() => {
+    const userList = getAllUsers();
+    let customUsers = [];
+    try {
+      const raw = localStorage.getItem('kpi_users');
+      if (raw) customUsers = JSON.parse(raw);
+    } catch {}
+    const merged = [...staffs];
+    [...userList, ...customUsers].forEach((u) => {
+      if (!u) return;
+      const exists = merged.some(
+        (s) =>
+          (s.id && u.id && s.id === u.id) ||
+          (s.username && u.username && s.username.toLowerCase() === u.username.toLowerCase()) ||
+          (s.employeeCode && u.employeeCode && s.employeeCode.toUpperCase() === u.employeeCode.toUpperCase()) ||
+          (s.name && u.name && s.name.trim().toLowerCase() === u.name.trim().toLowerCase())
+      );
+      if (!exists) {
+        merged.push({
+          id: u.id || `staff_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+          name: u.name,
+          employeeCode: u.employeeCode || `CB-${u.username || 'NEW'}`,
+          username: u.username,
+          title: u.title || 'Chuyên viên',
+          deptId: u.deptId || 'DEP_VP',
+          department: u.department,
+          vtvlId: u.vtvlId || '',
+          role: u.role || ROLES.STAFF,
+          status: u.status || 'ACTIVE',
         });
-
-      // Lấy lịch sử đánh giá 4 quý trong năm để tính điểm TB và kiểm tra khống chế
-      const quarterlyEvals = getStaffQuarterlyEvaluations(
-        evaluations,
-        staff.id,
-        staff.name,
-        targetYear
-      );
-      const { averageScore: quarterlyAvgScore } = calculateQuarterlyAverage(quarterlyEvals);
-      const capInfo = isYear ? checkYearlyGradeCap(quarterlyEvals) : { isCapped: false, reason: '' };
-
-      // Check existing evaluation in localStorage
-      const existingEval = evaluations.find(
-        (e) => (e.staffId === staff.id || e.staffName === staff.name) && e.period === selectedPeriod
-      );
-
-      const isLeader =
-        staff.role === ROLES.DEPT_HEAD ||
-        staff.role === ROLES.DEPT_LEADER ||
-        staff.role === ROLES.BAN_LEADER;
-
-      const hasQuarterlyEvals = quarterlyEvals.some((q) => q.isEvaluated && q.totalScore > 0);
-      const hasTasks = userTasks.length > 0;
-
-      // Department & VTVL info
-      const deptObj = departments.find((d) => d.id === staff.deptId);
-      const deptName = deptObj ? deptObj.name : staff.deptId || 'Chưa phân bổ';
-
-      const vtvlObj = vtvls.find((v) => v.id === staff.vtvlId);
-      const vtvlTitle = vtvlObj ? vtvlObj.title : staff.title || 'Chuyên viên';
-
-      // NẾU CÁN BỘ CHƯA CÓ NHIỆM VỤ VÀ CHƯA CÓ ĐÁNH GIÁ (hoặc Cả Năm chưa có quý nào):
-      if (!existingEval && !hasTasks && (!isYear || !hasQuarterlyEvals)) {
-        return {
-          id: staff.id,
-          staffId: staff.id,
-          employeeCode: staff.employeeCode || `CB-${staff.id}`,
-          name: staff.name,
-          deptId: staff.deptId,
-          deptName: deptName,
-          vtvlId: staff.vtvlId,
-          vtvlTitle: vtvlTitle,
-          autoKPIScore: null,
-          ethicsScore: null,
-          totalScore: null,
-          grade: 'Chưa đánh giá',
-          status: 'Chưa đánh giá',
-          tasksCount: 0,
-          quarterlyAvgScore: quarterlyAvgScore > 0 ? quarterlyAvgScore : 0,
-          isCapped: false,
-          capReason: '',
-          quarterlyEvals,
-        };
       }
+    });
+    return merged;
+  }, [staffs]);
 
-      // Part 1: Auto KPI score (Max 70đ)
-      let autoKPIScore;
-      if (existingEval?.autoKPIScore !== undefined) {
-        autoKPIScore = Number(existingEval.autoKPIScore);
-      } else if (isYear) {
-        autoKPIScore = calculateYearlyKPI(userTasks, staff, isLeader).finalKPIScore;
-      } else if (userTasks.length > 0) {
-        autoKPIScore = calculateTotalKPIScore(userTasks, staff, allAvailableStaffs);
-      } else {
-        const defaultProg = staff.progressAvg || 80;
-        autoKPIScore = Math.min(70, Math.round(defaultProg * 0.7 * 10) / 10);
-      }
+  const selectedNorm = useMemo(() => normalizePeriodAndQuarter(selectedPeriod), [selectedPeriod]);
+  const selectedPeriodObj = EVALUATION_PERIODS.find((p) => p.value === selectedPeriod);
+  const selectedPeriodLabel = selectedNorm.display || (selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod);
 
-      // Part 2: Ethics score (Max 30đ)
-      let ethicsScore = 28;
-      if (existingEval && existingEval.ethicsScore !== undefined) {
-        ethicsScore = Number(existingEval.ethicsScore);
-      } else if (existingEval && existingEval.bossEthicsScore !== undefined) {
-        ethicsScore = Number(existingEval.bossEthicsScore);
-      }
-      ethicsScore = Math.min(30, Math.max(0, ethicsScore));
-
-      // Part 3: Total score (Max 100đ)
-      const totalScore = Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10);
-
-      // Part 4: Grade classification (áp dụng khống chế nếu là Cả Năm theo Hướng dẫn 05-HD/TU)
-      let grade;
-      if (existingEval?.grade) {
-        grade = existingEval.grade;
-      } else if (isYear) {
-        grade = determineYearlyGrade(totalScore, quarterlyEvals);
-      } else {
-        grade = determineGrade(totalScore);
-      }
-
-      return {
-        id: staff.id,
-        staffId: staff.id,
-        employeeCode: staff.employeeCode || `CB-${staff.id}`,
-        name: staff.name,
-        deptId: staff.deptId,
-        deptName: deptName,
-        vtvlId: staff.vtvlId,
-        vtvlTitle: vtvlTitle,
-        autoKPIScore: autoKPIScore,
-        ethicsScore: ethicsScore,
-        totalScore: totalScore,
-        grade: grade,
-        status: existingEval?.status || 'Đã đánh giá',
-        tasksCount: userTasks.length,
-        quarterlyAvgScore,
-        isCapped: isYear ? capInfo.isCapped : false,
-        capReason: capInfo.reason,
-        quarterlyEvals,
-      };
+  // Compute all staff evaluations data using the unified calculation engine
+  const allStaffCalculatedData = useMemo(() => {
+    return calculateAllStaffEvaluationsForPeriod({
+      staffs: allAvailableStaffs,
+      assignedTasks,
+      evaluations,
+      period: selectedPeriod,
+      departments,
+      vtvls,
+      allAvailableStaffs,
     });
   }, [allAvailableStaffs, assignedTasks, evaluations, selectedPeriod, departments, vtvls]);
 
-  const selectedPeriodObj = EVALUATION_PERIODS.find((p) => p.value === selectedPeriod);
-  const selectedPeriodLabel = selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod;
-
-  // Kiểm tra kỳ đánh giá đã có kết quả hay chưa:
-  // - Cả năm (YEAR_2026): hiển thị dữ liệu của các quý đã có kết quả (mặc định)
-  // - Quý đã có kết quả (Q3_2026): hiển thị dữ liệu
-  // - Quý đang diễn ra hoặc chưa diễn ra: hiển thị toàn bộ StatCard là 0, biểu đồ trống, bảng trống
+  // Kiểm tra kỳ đánh giá đã có kết quả hay chưa
   const hasEvaluationData = useMemo(() => {
-    if (selectedPeriod === 'YEAR_2026' || selectedPeriod === 'Q3_2026') {
-      return true;
-    }
-    return evaluations.some((e) => e.period === selectedPeriod);
-  }, [selectedPeriod, evaluations]);
+    return allStaffCalculatedData.some((s) => s.totalScore !== null && s.grade !== 'Chưa đánh giá');
+  }, [allStaffCalculatedData]);
 
   // Filtered staff records for current view (after Dept and Search filter)
   const filteredStaffList = useMemo(() => {
-    if (!hasEvaluationData) {
-      return [];
-    }
-
     let list = allStaffCalculatedData;
 
     // Apply Department filter
     if (isDeptHead) {
       const userDept = currentUser.deptId || 'DEP_TCD';
-      list = list.filter((s) => s.deptId === userDept);
+      list = list.filter((s) => isSameDept(s.deptId || s.department, userDept, departments));
     } else if (selectedDeptId && selectedDeptId !== 'ALL') {
-      list = list.filter((s) => s.deptId === selectedDeptId);
+      list = list.filter((s) => isSameDept(s.deptId || s.department, selectedDeptId, departments));
     }
 
     // Apply Search keyword filter
@@ -266,14 +162,15 @@ export default function KPIOverviewView() {
       list = list.filter(
         (s) =>
           s.name.toLowerCase().includes(q) ||
-          s.employeeCode.toLowerCase().includes(q) ||
-          s.vtvlTitle.toLowerCase().includes(q) ||
-          s.deptName.toLowerCase().includes(q)
+          (s.employeeCode && s.employeeCode.toLowerCase().includes(q)) ||
+          (s.vtvlTitle && s.vtvlTitle.toLowerCase().includes(q)) ||
+          (s.deptName && s.deptName.toLowerCase().includes(q))
       );
     }
 
     return list;
-  }, [hasEvaluationData, allStaffCalculatedData, isDeptHead, currentUser.deptId, selectedDeptId, searchTerm]);
+  }, [allStaffCalculatedData, isDeptHead, currentUser.deptId, selectedDeptId, searchTerm, departments]);
+
 
   // KHỐI 2: Summary Stats Calculations
   const totalStaffCount = filteredStaffList.length;
@@ -320,26 +217,20 @@ export default function KPIOverviewView() {
       { id: 'DEP_TCCB', code: 'TCCB', name: 'Phòng Tổ chức cán bộ' },
     ];
 
-    const fallbackScores = {
-      DEP_VP: 82.5,
-      DEP_BV: 78.0,
-      DEP_TCD: 85.2,
-      DEP_TCCB: 79.8,
-    };
-
     return deptList.map((dept) => {
       const deptStaffs = allStaffCalculatedData.filter((s) => s.deptId === dept.id);
-      const count = deptStaffs.length;
+      const evaluatedDeptStaffs = deptStaffs.filter((s) => s.totalScore !== null);
+      const count = evaluatedDeptStaffs.length;
       const avgScore = count > 0
-        ? Math.round((deptStaffs.reduce((sum, s) => sum + s.totalScore, 0) / count) * 10) / 10
-        : (fallbackScores[dept.id] || 80.0);
+        ? Math.round((evaluatedDeptStaffs.reduce((sum, s) => sum + s.totalScore, 0) / count) * 10) / 10
+        : 0;
 
       return {
         deptId: dept.id,
         deptName: dept.code || dept.name,
         fullDeptName: dept.name,
         avgScore: avgScore,
-        staffCount: count > 0 ? count : 2,
+        staffCount: count,
       };
     });
   }, [hasEvaluationData, departments, allStaffCalculatedData]);
@@ -392,12 +283,14 @@ export default function KPIOverviewView() {
       // Summary statistics rows
       rows.push([]);
       rows.push(['THỐNG KÊ TỔNG HỢP TOÀN ĐƠN VỊ:']);
-      rows.push(['Tổng số cán bộ được đánh giá:', totalStaffCount]);
-      rows.push(['Điểm trung bình toàn đơn vị:', `${avgTotalScore} / 100 điểm`]);
+      rows.push(['Tổng số cán bộ trong đơn vị:', totalStaffCount]);
+      rows.push(['Số cán bộ đã có kết quả đánh giá:', totalEvaluatedCount]);
+      rows.push(['Điểm trung bình toàn đơn vị:', totalEvaluatedCount > 0 ? `${avgTotalScore} / 100 điểm` : '-']);
       rows.push(['Hoàn thành xuất sắc nhiệm vụ:', `${countXuatSac} đồng chí (${pctXuatSac}%)`]);
       rows.push(['Hoàn thành tốt nhiệm vụ:', `${countTot} đồng chí (${pctTot}%)`]);
       rows.push(['Hoàn thành nhiệm vụ:', `${countHoanThanh} đồng chí (${pctHoanThanh}%)`]);
       rows.push(['Không hoàn thành nhiệm vụ:', `${countKhongHT} đồng chí (${pctKhongHT}%)`]);
+      rows.push(['Chưa đánh giá:', `${totalStaffCount - totalEvaluatedCount} đồng chí`]);
 
       const ws = XLSX.utils.aoa_to_sheet(rows);
       ws['!cols'] = [
@@ -548,10 +441,10 @@ export default function KPIOverviewView() {
                 </colgroup>
                 <tr>
                   <td style="padding: 3px 8px 3px 0; vertical-align: top; white-space: nowrap;">
-                    - Tổng số cán bộ, CC được đánh giá: <strong>${totalStaffCount}</strong> đồng chí.
+                    - Tổng số cán bộ: <strong>${totalStaffCount}</strong> đồng chí (Đã đánh giá: <strong>${totalEvaluatedCount}</strong> đồng chí).
                   </td>
                   <td style="padding: 3px 0 3px 8px; vertical-align: top; white-space: nowrap;">
-                    - Điểm trung bình toàn đơn vị: <strong>${avgTotalScore} / 100 điểm</strong>.
+                    - Điểm trung bình toàn đơn vị: <strong>${totalEvaluatedCount > 0 ? `${avgTotalScore} / 100 điểm` : '—'}</strong>.
                   </td>
                 </tr>
                 <tr>
@@ -964,9 +857,11 @@ export default function KPIOverviewView() {
                   boxShadow: '0 2px 8px rgba(25, 118, 210, 0.25)',
                 }}
               >
-                {selectedPeriod.startsWith('YEAR_')
+                {selectedNorm.isYear
                   ? 'Xuất Quyết định Xếp loại Cả Năm'
-                  : 'Xuất Quyết định Xếp loại'}
+                  : selectedNorm.isQuarter
+                    ? `Xuất Quyết định Xếp loại ${selectedNorm.display}`
+                    : `Xuất Báo cáo Kết quả ${selectedNorm.display}`}
               </Button>
               <Button
                 variant="outlined"
@@ -1013,21 +908,11 @@ export default function KPIOverviewView() {
 
           {/* Bottom Row: Filters (Kỳ đánh giá, Phòng chuyên môn) */}
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
-            <FormControl size="small" sx={{ minWidth: 220 }}>
-              <InputLabel id="overview-period-label">Kỳ đánh giá</InputLabel>
-              <Select
-                labelId="overview-period-label"
-                value={selectedPeriod}
-                label="Kỳ đánh giá"
-                onChange={(e) => setSelectedPeriod(e.target.value)}
-              >
-                {EVALUATION_PERIODS.map((period) => (
-                  <MenuItem key={period.value} value={period.value}>
-                    {period.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <PeriodMatrixPicker
+              label="Kỳ đánh giá"
+              value={selectedPeriod}
+              onChange={(newVal) => setSelectedPeriod(newVal)}
+            />
 
             <Tooltip
               title={
@@ -1113,22 +998,23 @@ export default function KPIOverviewView() {
                   {totalStaffCount}
                 </Typography>
                 <Chip
-                  label="100%"
+                  label={totalEvaluatedCount > 0 ? `${totalEvaluatedCount}/${totalStaffCount} đã đánh giá` : 'Chưa có đánh giá'}
                   size="small"
                   sx={{
-                    bgcolor: 'rgba(2, 136, 209, 0.12)',
-                    color: '#0277bd',
-                    border: '1px solid rgba(2, 136, 209, 0.3)',
-                    fontWeight: 800,
+                    bgcolor: totalEvaluatedCount > 0 ? 'rgba(2, 136, 209, 0.12)' : 'action.hover',
+                    color: totalEvaluatedCount > 0 ? '#0277bd' : 'text.secondary',
+                    border: '1px solid',
+                    borderColor: totalEvaluatedCount > 0 ? 'rgba(2, 136, 209, 0.3)' : 'divider',
+                    fontWeight: 700,
                     height: 24,
                     borderRadius: '12px',
-                    fontSize: '0.78rem',
+                    fontSize: '0.72rem',
                   }}
                 />
               </Box>
               <Box sx={{ display: 'flex', alignItems: 'center', mt: 'auto', pt: 1, borderTop: '1px dashed', borderColor: 'divider', height: 30 }}>
                 <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
-                  Điểm TB toàn đơn vị: <strong>{avgTotalScore} / 100đ</strong>
+                  Điểm TB toàn đơn vị: <strong>{totalEvaluatedCount > 0 ? `${avgTotalScore} / 100đ` : '—'}</strong>
                 </Typography>
               </Box>
             </CardContent>
@@ -1523,15 +1409,21 @@ export default function KPIOverviewView() {
         open={docModalOpen}
         onClose={() => setDocModalOpen(false)}
         initialPeriod={selectedPeriod}
-        initialDocType="DECISION_39"
-        staffList={
-          filteredStaffList.length > 0
-            ? filteredStaffList
-            : (selectedDeptId && selectedDeptId !== 'ALL'
-              ? allStaffCalculatedData.filter((s) => s.deptId === selectedDeptId)
-              : allStaffCalculatedData)
+        initialDocType={
+          selectedNorm.isYear
+            ? 'DECISION_39'
+            : selectedNorm.isQuarter
+              ? 'REPORT_05'
+              : 'REPORT_MONTH'
         }
+        staffList={filteredStaffList}
+        allStaffs={allAvailableStaffs}
+        assignedTasks={assignedTasks}
+        evaluations={evaluations}
         departments={departments}
+        vtvls={vtvls}
+        selectedDeptId={isDeptHead ? (currentUser.deptId || 'DEP_TCD') : selectedDeptId}
+        onPeriodChange={(newPeriod) => setSelectedPeriod(newPeriod)}
       />
     </Box>
   );

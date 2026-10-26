@@ -105,9 +105,13 @@ export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null
     const effectiveLateCount = task.isObjectiveLate ? 0 : Math.max(0, Number(task.lateCount) || 0);
     const tienDoQuyDoi = Math.max(0, Math.round((actualQuyDoi - (actualQuyDoi * effectiveLateCount * 0.25)) * 100) / 100);
 
-    // Nếu nhiệm vụ đang 'Chờ duyệt', không cộng vào tổng chỉ tiêu/thực tế để tránh làm giảm tỷ lệ hoàn thành KPI của cán bộ
-    const isPending = task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt';
-    if (!isPending) {
+    // Nếu nhiệm vụ đang 'Chờ duyệt' hoặc 'Đã từ chối', không cộng vào tổng chỉ tiêu/thực tế để bảo vệ điểm KPI của cán bộ
+    const isExcludedFromScoring =
+      task.status === 'Chờ duyệt' ||
+      task.approvalStatus === 'Chờ duyệt' ||
+      task.status === 'Đã từ chối' ||
+      task.approvalStatus === 'Từ chối';
+    if (!isExcludedFromScoring) {
       sumTargetQuyDoi += targetQuyDoi;
       sumActualQuyDoi += actualQuyDoi;
       sumChatLuongQuyDoi += chatLuongQuyDoi;
@@ -351,9 +355,13 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
     const effectiveLateCount = isObjectiveLate ? 0 : lateCount;
     const tienDoQuyDoi = Math.max(0, actualQuyDoi - actualQuyDoi * effectiveLateCount * 0.25);
 
-    // Nếu nhiệm vụ đang 'Chờ duyệt', không cộng vào tổng tính điểm
-    const isPending = task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt';
-    if (!isPending) {
+    // Nếu nhiệm vụ đang 'Chờ duyệt' hoặc 'Đã từ chối', không cộng vào tổng tính điểm
+    const isExcludedFromScoring =
+      task.status === 'Chờ duyệt' ||
+      task.approvalStatus === 'Chờ duyệt' ||
+      task.status === 'Đã từ chối' ||
+      task.approvalStatus === 'Từ chối';
+    if (!isExcludedFromScoring) {
       sumTargetQuyDoi += targetQuyDoi;
       sumActualQuyDoi += actualQuyDoi;
       sumChatLuongQuyDoi += chatLuongQuyDoi;

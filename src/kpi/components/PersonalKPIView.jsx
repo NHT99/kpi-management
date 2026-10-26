@@ -14,6 +14,7 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import TextField from '@mui/material/TextField';
 import MenuItem from '@mui/material/MenuItem';
+import ListSubheader from '@mui/material/ListSubheader';
 import Slider from '@mui/material/Slider';
 import Alert from '@mui/material/Alert';
 import Tooltip from '@mui/material/Tooltip';
@@ -38,6 +39,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
 import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 import SupervisorAccountRoundedIcon from '@mui/icons-material/SupervisorAccountRounded';
@@ -48,6 +50,7 @@ import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
@@ -65,7 +68,8 @@ import {
   checkYearlyGradeCap,
 } from '../utils/scoringEngine';
 import { logAction } from '../utils/auditLogger';
-import { getFullYearQuarterOptions, isQuarterInPast, normalizePeriodAndQuarter } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isQuarterInPast, normalizePeriodAndQuarter, isTaskInPeriod, getTaskPeriodDisplay } from '../utils/quarterHelper';
+import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 import {
   isQuarterEligibleForSeparateDecision,
   getStaffQuarterlyEvaluations,
@@ -85,11 +89,15 @@ export default function PersonalKPIView() {
     return storedEvaluations && Array.isArray(storedEvaluations) ? storedEvaluations : INITIAL_EVALUATIONS;
   }, [storedEvaluations]);
 
-  // Đồng bộ phiên bản init data
+  // Đồng bộ phiên bản init data nhưng bảo toàn các nhiệm vụ do người dùng tự tạo
   useEffect(() => {
     const savedVer = localStorage.getItem('kpi_data_version');
     if (savedVer !== KPI_DATA_VERSION) {
-      setAssignedTasks(INITIAL_ASSIGNED_TASKS);
+      setAssignedTasks((prev) => {
+        const initialIds = new Set(INITIAL_ASSIGNED_TASKS.map((t) => t.id));
+        const custom = Array.isArray(prev) ? prev.filter((t) => !initialIds.has(t.id)) : [];
+        return [...custom, ...INITIAL_ASSIGNED_TASKS];
+      });
       setStoredEvaluations(INITIAL_EVALUATIONS);
       localStorage.setItem('kpi_data_version', KPI_DATA_VERSION);
     }
@@ -101,13 +109,23 @@ export default function PersonalKPIView() {
   const [masterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
   const { showToast, ToastComponent } = useToast();
 
-  // Tự động xác định Quý và Năm hiện tại từ hệ thống
-  const { currentInfo: currentQuarterInfo, quarters, yearOption } = useMemo(() => {
+  // Tự động xác định Tháng, Quý và Năm hiện tại từ hệ thống
+  const { currentInfo: currentQuarterInfo, currentMonthInfo, months, quarters, yearOption, groupedOptions } = useMemo(() => {
     return getFullYearQuarterOptions();
   }, []);
 
   const PERIOD_OPTIONS = useMemo(() => {
     return [
+      ...months.map((m) => {
+        let tag = '';
+        if (m.isCurrent) tag = ' (Hiện tại)';
+        else if (m.isPast) tag = ' (Đã kết thúc)';
+        else if (m.isFuture) tag = ' (Chưa diễn ra)';
+        return {
+          ...m,
+          label: `${m.display}${tag}`,
+        };
+      }),
       ...quarters.map((q) => {
         let tag = '';
         if (q.isCurrent) tag = ' (Hiện tại)';
@@ -120,7 +138,7 @@ export default function PersonalKPIView() {
       }),
       yearOption,
     ];
-  }, [quarters, yearOption]);
+  }, [months, quarters, yearOption]);
 
   const [selectedPeriod, setSelectedPeriod] = useState(currentQuarterInfo.periodKey);
   const isLeader = role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER || role === ROLES.BAN_LEADER;
@@ -130,6 +148,8 @@ export default function PersonalKPIView() {
   const selectedPeriodDisplay = selectedPeriodObj.display;
   const isPastQuarter = Boolean(selectedPeriodObj.isPast);
   const isYear = Boolean(selectedPeriodObj.isYear);
+  const isMonth = Boolean(selectedPeriodObj.isMonth);
+  const periodLabelType = isYear ? 'Năm' : isMonth ? 'Tháng' : 'Quý';
   const isQ4 = !isQuarterEligibleForSeparateDecision(selectedPeriod);
 
   // Trục D: Đánh giá Năng lực Lãnh đạo (Chỉ áp dụng cho DEPT_LEADER & BAN_LEADER)
@@ -276,16 +296,9 @@ export default function PersonalKPIView() {
   // Lọc nhiệm vụ thuộc người dùng hiện tại và theo kỳ được chọn (data thật)
   // Bao gồm cả nhiệm vụ 'Chờ duyệt' (vẫn hiển thị trong bảng nhưng khóa cập nhật tiến độ)
   const userAssignedTasks = useMemo(() => {
-    const normSelected = normalizePeriodAndQuarter(selectedPeriod);
     return assignedTasks
       .filter((t) => t.staffName === currentUser.name || t.staffId === currentUser.id)
-      .filter((t) => {
-        const taskNorm = normalizePeriodAndQuarter(t.period || t.quarter || t.deadline);
-        if (normSelected.isYear) {
-          return taskNorm.year === normSelected.year;
-        }
-        return taskNorm.periodKey === normSelected.periodKey;
-      })
+      .filter((t) => isTaskInPeriod(t, selectedPeriod))
       .map((t) => {
         const mult = getTaskMultiplier(t);
         return {
@@ -295,6 +308,38 @@ export default function PersonalKPIView() {
         };
       });
   }, [assignedTasks, currentUser, selectedPeriod, getTaskMultiplier]);
+
+  // Lọc riêng các nhiệm vụ bị cấp trên từ chối
+  const rejectedTasks = useMemo(() => {
+    return userAssignedTasks.filter(
+      (t) => t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối'
+    );
+  }, [userAssignedTasks]);
+
+  // Bộ lọc trạng thái bảng nhiệm vụ
+  const [taskStatusFilter, setTaskStatusFilter] = useState('ALL');
+
+  const inProgressTasksCount = useMemo(() => {
+    return userAssignedTasks.filter(
+      (t) => (t.status === 'Đang tiến hành' || t.status === 'Mới tạo' || t.status === 'Mới giao') && t.approvalStatus !== 'Từ chối'
+    ).length;
+  }, [userAssignedTasks]);
+
+  const pendingTasksCount = useMemo(() => {
+    return userAssignedTasks.filter(
+      (t) => (t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt') && t.approvalStatus !== 'Từ chối'
+    ).length;
+  }, [userAssignedTasks]);
+
+  const completedTasksCount = useMemo(() => {
+    return userAssignedTasks.filter((t) => t.status === 'Đã hoàn thành').length;
+  }, [userAssignedTasks]);
+
+  // Xóa nhiệm vụ đề xuất bị từ chối
+  const handleDeleteProposedTask = (taskId) => {
+    setAssignedTasks((prev) => prev.filter((t) => t.id !== taskId));
+    showToast('Đã xóa nhiệm vụ đề xuất bị từ chối khỏi danh sách!', 'info');
+  };
 
   const hasNoTasks = userAssignedTasks.length === 0;
 
@@ -306,7 +351,8 @@ export default function PersonalKPIView() {
     ) || null;
   }, [evaluations, currentUser, selectedPeriod, hasNoTasks]);
 
-  const isSubmitted = Boolean(currentPeriodEval);
+  const isRejected = currentPeriodEval?.status === 'REJECTED';
+  const isSubmitted = Boolean(currentPeriodEval) && !isRejected;
   const isApproved = currentPeriodEval?.status === 'APPROVED';
   // Đồng bộ trạng thái đã duyệt: Chỉ tính là đã duyệt nếu CÓ nhiệm vụ thực tế và hồ sơ thực sự có status === 'APPROVED'
   const isEffectivelyApproved = Boolean(!hasNoTasks && isApproved);
@@ -327,14 +373,14 @@ export default function PersonalKPIView() {
   const setD2Score = setUserD2Score;
   const setD3Score = setUserD3Score;
 
-  // Nhãn động cho nút Gửi đánh giá theo kỳ được chọn (Quý hoặc Năm)
-  let dynamicSubmitButtonLabel = isYear
-    ? 'Gửi đánh giá Năm (Chấm 30đ Phẩm chất)'
-    : 'Gửi đánh giá Quý (Chấm 30đ Phẩm chất)';
+  // Nhãn động cho nút Gửi đánh giá theo kỳ được chọn (Tháng, Quý hoặc Năm)
+  let dynamicSubmitButtonLabel = `Gửi đánh giá ${periodLabelType} (Chấm 30đ Phẩm chất)`;
   if (hasNoTasks) {
     dynamicSubmitButtonLabel = `Chưa có nhiệm vụ (${selectedPeriodDisplay})`;
   } else if (isEffectivelyApproved) {
     dynamicSubmitButtonLabel = `Đã duyệt (${selectedPeriodDisplay})`;
+  } else if (isRejected) {
+    dynamicSubmitButtonLabel = `Bị từ chối - Gửi lại đánh giá (${selectedPeriodDisplay})`;
   } else if (isSubmitted) {
     dynamicSubmitButtonLabel = `Đã gửi đánh giá (${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'})`;
   }
@@ -390,6 +436,29 @@ export default function PersonalKPIView() {
   // Điểm KPI Tạm tính trong suốt quý / cả năm (Max 70đ)
   const totalKPIScore = kpiQuarterlyResult?.finalKPIScore ?? 0;
   const displayTasks = kpiQuarterlyResult?.convertedTasks || kpiQuarterlyResult?.tasksDetail || [];
+
+  const filteredDisplayTasks = useMemo(() => {
+    if (taskStatusFilter === 'ALL') return displayTasks;
+    if (taskStatusFilter === 'REJECTED') {
+      return displayTasks.filter(
+        (t) => t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối'
+      );
+    }
+    if (taskStatusFilter === 'PENDING') {
+      return displayTasks.filter(
+        (t) => (t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt') && t.approvalStatus !== 'Từ chối'
+      );
+    }
+    if (taskStatusFilter === 'IN_PROGRESS') {
+      return displayTasks.filter(
+        (t) => (t.status === 'Đang tiến hành' || t.status === 'Mới tạo' || t.status === 'Mới giao') && t.approvalStatus !== 'Từ chối'
+      );
+    }
+    if (taskStatusFilter === 'COMPLETED') {
+      return displayTasks.filter((t) => t.status === 'Đã hoàn thành');
+    }
+    return displayTasks;
+  }, [displayTasks, taskStatusFilter]);
 
   // Self Evaluation Modal State (30đ Phẩm chất)
   const [selfEvalModalOpen, setSelfEvalModalOpen] = useState(false);
@@ -602,7 +671,7 @@ export default function PersonalKPIView() {
       totalScore: totalScore,
       grade: grade,
       status: targetStatus,
-      selfComment: selfComment || `Đã hoàn thành tự đánh giá ${isYear ? 'Năm' : 'Quý'} theo quy định chuẩn 4 trục A, B, C, D của BTCTU.`,
+      selfComment: selfComment || `Đã hoàn thành tự đánh giá ${periodLabelType} theo quy định chuẩn 4 trục A, B, C, D của BTCTU.`,
       kpiBreakdown: {
         rateA: finalCalculated.rateA,
         rateB: finalCalculated.rateB,
@@ -623,20 +692,21 @@ export default function PersonalKPIView() {
     });
 
     logAction(
-      `Gửi đánh giá ${isYear ? 'Năm' : 'Quý'}`,
+      `Gửi đánh giá ${periodLabelType}`,
       currentUser,
-      `Chốt điểm chính thức ${isYear ? 'Năm' : 'Quý'} (${selectedPeriod}): KPI 4 trục ${finalOfficialKPIScore}/70đ + Phẩm chất ${ethicsScore}/30đ = Tổng ${totalScore}/100đ (${grade}). Trạng thái: ${targetStatus}`,
+      `Chốt điểm chính thức ${periodLabelType} (${selectedPeriod}): KPI 4 trục ${finalOfficialKPIScore}/70đ + Phẩm chất ${ethicsScore}/30đ = Tổng ${totalScore}/100đ (${grade}). Trạng thái: ${targetStatus}`,
       'KPI Cá nhân'
     );
 
-    showToast(`Đã gửi bản đánh giá ${isYear ? 'Năm' : 'Quý'} thành công! Điểm KPI chính thức: ${finalOfficialKPIScore}/70đ, Tổng điểm: ${totalScore}/100đ (${grade}).`, 'success');
+    showToast(`Đã gửi bản đánh giá ${periodLabelType} thành công! Điểm KPI chính thức: ${finalOfficialKPIScore}/70đ, Tổng điểm: ${totalScore}/100đ (${grade}).`, 'success');
     setSelfEvalModalOpen(false);
   };
 
   // Propose / Self-create Task Handler
   const handleSavePropose = () => {
     const taskDeadline = proposeForm.deadline || new Date().toISOString().split('T')[0];
-    const norm = normalizePeriodAndQuarter(selectedPeriod.startsWith('YEAR_') ? currentQuarterInfo.periodKey : selectedPeriod);
+    const targetPeriod = proposeForm.period || (selectedPeriod.startsWith('YEAR_') ? currentQuarterInfo.periodKey : selectedPeriod);
+    const norm = normalizePeriodAndQuarter(targetPeriod);
 
     if (isPastQuarter || isQuarterInPast(norm.periodKey)) {
       showToast('Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới!', 'warning');
@@ -742,25 +812,12 @@ export default function PersonalKPIView() {
                 </Typography>
               </Box>
 
-              {/* Dropdown Kỳ đánh giá (Quý hoặc Cả năm) */}
-              <TextField
-                select
-                size="small"
+              {/* Dropdown Kỳ đánh giá (Ma trận Lịch: Tháng, Quý, Năm) */}
+              <PeriodMatrixPicker
                 label="Kỳ đánh giá"
                 value={selectedPeriod}
-                onChange={(e) => setSelectedPeriod(e.target.value)}
-                sx={{
-                  minWidth: 230,
-                  bgcolor: 'background.paper',
-                  '& .MuiSelect-select': { fontWeight: 600, py: 0.8 },
-                }}
-              >
-                {PERIOD_OPTIONS.map((opt) => (
-                  <MenuItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </MenuItem>
-                ))}
-              </TextField>
+                onChange={(newVal) => setSelectedPeriod(newVal)}
+              />
             </Box>
 
             {/* Right: Căn lề phải nút đề xuất nhiệm vụ mới và nút gửi đánh giá quý */}
@@ -787,7 +844,21 @@ export default function PersonalKPIView() {
                     color="primary"
                     size="small"
                     startIcon={<AddRoundedIcon />}
-                    onClick={() => setProposeDialogOpen(true)}
+                    onClick={() => {
+                      if (isPastQuarter) {
+                        showToast('Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới!', 'warning');
+                        return;
+                      }
+                      const norm = normalizePeriodAndQuarter(selectedPeriod);
+                      const validMonth = (norm.isMonth && !norm.isPast) ? norm.periodKey : currentMonthInfo.periodKey;
+                      const validQuarter = (norm.isMonth && !norm.isPast) ? norm.quarterDisplay : currentMonthInfo.display;
+                      setProposeForm((prev) => ({
+                        ...prev,
+                        period: validMonth,
+                        quarter: validQuarter,
+                      }));
+                      setProposeDialogOpen(true);
+                    }}
                     disabled={isPastQuarter}
                     sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5, whiteSpace: 'nowrap' }}
                   >
@@ -821,10 +892,10 @@ export default function PersonalKPIView() {
               ) : (
                 <Button
                   variant="contained"
-                  color={hasNoTasks ? 'inherit' : isEffectivelyApproved ? 'success' : isSubmitted ? 'info' : 'secondary'}
+                  color={hasNoTasks ? 'inherit' : isEffectivelyApproved ? 'success' : isRejected ? 'error' : isSubmitted ? 'info' : 'secondary'}
                   size="small"
                   disabled={hasNoTasks}
-                  startIcon={hasNoTasks ? null : isEffectivelyApproved ? <CheckCircleRoundedIcon /> : <SendRoundedIcon />}
+                  startIcon={hasNoTasks ? null : isEffectivelyApproved ? <CheckCircleRoundedIcon /> : isRejected ? <CancelRoundedIcon /> : <SendRoundedIcon />}
                   onClick={handleOpenSelfEvalModal}
                   sx={{
                     textTransform: 'none',
@@ -1037,7 +1108,7 @@ export default function PersonalKPIView() {
           <Card variant="outlined" sx={{ borderRadius: 2, height: '100%' }}>
             <CardContent sx={{ p: 2.5 }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
-                {isYear ? 'Trạng thái Báo cáo Năm' : 'Trạng thái Báo cáo Quý'}
+                {isYear ? 'Trạng thái Báo cáo Năm' : isMonth ? 'Trạng thái Báo cáo Tháng' : 'Trạng thái Báo cáo Quý'}
               </Typography>
               <Box sx={{ my: 1.5 }}>
                 {hasNoTasks ? (
@@ -1050,6 +1121,13 @@ export default function PersonalKPIView() {
                   <Chip
                     label={`Đã duyệt (${currentPeriodEval?.approverName || 'Lãnh đạo Ban'})`}
                     color="success"
+                    sx={{ fontWeight: 700 }}
+                  />
+                ) : isRejected ? (
+                  <Chip
+                    icon={<CancelRoundedIcon sx={{ fontSize: 16 }} />}
+                    label="Bị từ chối (Yêu cầu nộp lại)"
+                    color="error"
                     sx={{ fontWeight: 700 }}
                   />
                 ) : isSubmitted ? (
@@ -1067,7 +1145,7 @@ export default function PersonalKPIView() {
                   />
                 ) : (
                   <Chip
-                    label={isYear ? 'Điểm Tạm tính trong Năm' : 'Điểm Tạm tính trong Quý'}
+                    label={isYear ? 'Điểm Tạm tính trong Năm' : isMonth ? 'Điểm Tạm tính trong Tháng' : 'Điểm Tạm tính trong Quý'}
                     color="info"
                     sx={{ fontWeight: 700 }}
                   />
@@ -1080,11 +1158,20 @@ export default function PersonalKPIView() {
                   <>
                     Kết quả chính thức: <strong>{currentPeriodEval?.totalScore ?? 0}/100đ</strong> ({currentPeriodEval?.grade ?? 'Đạt'}). Bấm nút phía trên để xem chi tiết bản đánh giá.
                   </>
+                ) : isRejected ? (
+                  <Alert severity="error" sx={{ py: 0.5, px: 1, mt: 0.5, '& .MuiAlert-message': { fontSize: '0.75rem' } }}>
+                    Bản tự đánh giá bị cấp trên ({currentPeriodEval?.rejectedBy || 'Lãnh đạo'}) từ chối / trả lại.
+                    {currentPeriodEval?.rejectReason && (
+                      <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontWeight: 700 }}>
+                        Lý do: &quot;{currentPeriodEval.rejectReason}&quot;
+                      </Typography>
+                    )}
+                  </Alert>
                 ) : isQ4 ? (
                   'Theo Hướng dẫn 05-HD/TU: Số liệu Quý IV tích lũy vào đợt Tổng kết Cả Năm. Chuyển sang kỳ Cả Năm để gửi bản tự đánh giá.'
                 ) : (
                   <>
-                    Bấm <strong>&quot;Gửi đánh giá {isYear ? 'Năm' : 'Quý'}&quot;</strong> để chốt điểm chính thức 4 trục (Max 70đ) và tự chấm 30đ Phẩm chất đạo đức.
+                    Bấm <strong>&quot;Gửi đánh giá {periodLabelType}&quot;</strong> để chốt điểm chính thức 4 trục (Max 70đ) và tự chấm 30đ Phẩm chất đạo đức.
                   </>
                 )}
               </Typography>
@@ -1152,7 +1239,7 @@ export default function PersonalKPIView() {
                   </Box>
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.4 }}>
                     {autoD1 === 100
-                      ? `100% cán bộ cấp dưới (${subordinates.length} cán bộ) có điểm đánh giá ${isYear ? 'Năm' : 'Quý'} đạt từ 50 điểm trở lên.`
+                      ? `100% cán bộ cấp dưới (${subordinates.length} cán bộ) có điểm đánh giá ${periodLabelType} đạt từ 50 điểm trở lên.`
                       : `Đơn vị có cấp dưới chưa đạt từ 50 điểm trở lên hoặc chưa hoàn tất kỳ đánh giá (${subordinates.length} cán bộ trực thuộc).`}
                   </Typography>
                 </Paper>
@@ -1218,12 +1305,123 @@ export default function PersonalKPIView() {
         </Card>
       )}
 
+      {/* Banner Cảnh báo Nhiệm vụ bị từ chối */}
+      {rejectedTasks.length > 0 && (
+        <Alert
+          severity="error"
+          variant="outlined"
+          sx={{
+            mb: 2.5,
+            borderRadius: 2,
+            bgcolor: '#fef2f2',
+            borderColor: '#fca5a5',
+            '& .MuiAlert-icon': { color: '#dc2626' },
+          }}
+          action={
+            <Button
+              color="error"
+              size="small"
+              variant="contained"
+              onClick={() => setTaskStatusFilter('REJECTED')}
+              sx={{ textTransform: 'none', fontWeight: 700 }}
+            >
+              Xem nhiệm vụ bị từ chối ({rejectedTasks.length})
+            </Button>
+          }
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 800, color: '#991b1b' }}>
+            ⚠️ Bạn có {rejectedTasks.length} nhiệm vụ đề xuất bị Cấp trên từ chối phê duyệt!
+          </Typography>
+          {/* <Typography variant="caption" sx={{ color: '#7f1d1d' }}>
+            Nhiệm vụ bị từ chối sẽ không được tính vào kết quả KPI của kỳ. Đồng chí vui lòng xem lý do và xóa hoặc đề xuất lại nhiệm vụ mới.
+          </Typography> */}
+        </Alert>
+      )}
+
       {/* Main Weekly Progress Grid Table */}
       <Card variant="outlined" sx={{ borderRadius: 2, overflow: 'hidden' }}>
-        <Box sx={{ p: 2.5, bgcolor: 'action.hover', borderBottom: '1px solid', borderColor: 'divider' }}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({selectedPeriodDisplay}{selectedPeriodObj?.isCurrent ? ' - Hiện tại' : selectedPeriodObj?.isPast ? ' - Đã duyệt' : ''})
-          </Typography>
+        <Box sx={{ p: 2.2, bgcolor: 'action.hover', borderBottom: '1px solid', borderColor: 'divider' }}>
+          {/* Header Title */}
+          <Box sx={{ mb: 1.5 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.3 }}>
+              Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({selectedPeriodDisplay}{selectedPeriodObj?.isCurrent ? ' - Hiện tại' : selectedPeriodObj?.isPast ? ' - Đã duyệt' : ''})
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Theo dõi tiến độ, chất lượng và cập nhật khối lượng công việc thực tế theo chu kỳ Tháng
+            </Typography>
+          </Box>
+
+          {/* Quick Status Filter Bar - Ngay hàng thẳng lối */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: 1,
+              pt: 1.2,
+              borderTop: '1px dashed',
+              borderColor: 'divider',
+            }}
+          >
+            <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', mr: 0.5, whiteSpace: 'nowrap' }}>
+              Trạng thái:
+            </Typography>
+            <Chip
+              label={`Tất cả (${userAssignedTasks.length})`}
+              size="small"
+              clickable
+              color={taskStatusFilter === 'ALL' ? 'primary' : 'default'}
+              variant={taskStatusFilter === 'ALL' ? 'filled' : 'outlined'}
+              onClick={() => setTaskStatusFilter('ALL')}
+              sx={{ fontWeight: 700, borderRadius: 1.5 }}
+            />
+            <Chip
+              label={`Đang thực hiện (${inProgressTasksCount})`}
+              size="small"
+              clickable
+              color={taskStatusFilter === 'IN_PROGRESS' ? 'primary' : 'default'}
+              variant={taskStatusFilter === 'IN_PROGRESS' ? 'filled' : 'outlined'}
+              onClick={() => setTaskStatusFilter('IN_PROGRESS')}
+              sx={{ fontWeight: 600, borderRadius: 1.5 }}
+            />
+            <Chip
+              label={`Chờ duyệt (${pendingTasksCount})`}
+              size="small"
+              clickable
+              color={taskStatusFilter === 'PENDING' ? 'warning' : 'default'}
+              variant={taskStatusFilter === 'PENDING' ? 'filled' : 'outlined'}
+              onClick={() => setTaskStatusFilter('PENDING')}
+              sx={{ fontWeight: 600, borderRadius: 1.5 }}
+            />
+            <Chip
+              label={`Đã hoàn thành (${completedTasksCount})`}
+              size="small"
+              clickable
+              color={taskStatusFilter === 'COMPLETED' ? 'success' : 'default'}
+              variant={taskStatusFilter === 'COMPLETED' ? 'filled' : 'outlined'}
+              onClick={() => setTaskStatusFilter('COMPLETED')}
+              sx={{ fontWeight: 600, borderRadius: 1.5 }}
+            />
+            {rejectedTasks.length > 0 && (
+              <Chip
+                label={`Đã từ chối (${rejectedTasks.length})`}
+                size="small"
+                clickable
+                color="error"
+                variant={taskStatusFilter === 'REJECTED' ? 'filled' : 'outlined'}
+                onClick={() => setTaskStatusFilter('REJECTED')}
+                sx={{
+                  fontWeight: 800,
+                  borderRadius: 1.5,
+                  ...(taskStatusFilter !== 'REJECTED' && {
+                    bgcolor: '#fee2e2',
+                    color: '#b91c1c',
+                    borderColor: '#fca5a5',
+                  }),
+                }}
+              />
+            )}
+          </Box>
         </Box>
 
         <TableContainer component={Paper} elevation={0}>
@@ -1231,6 +1429,7 @@ export default function PersonalKPIView() {
             <TableHead sx={{ bgcolor: 'background.default' }}>
               <TableRow>
                 <TableCell sx={{ fontWeight: 700 }}>Mã & Tên nhiệm vụ KPI</TableCell>
+                <TableCell sx={{ fontWeight: 700 }} align="center">Kỳ nhiệm vụ</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Sản phẩm đầu ra</TableCell>
                 <TableCell sx={{ fontWeight: 700 }} align="center">Chỉ tiêu QĐ</TableCell>
                 <TableCell sx={{ fontWeight: 700 }} align="center">Thực tế QĐ (A)</TableCell>
@@ -1242,16 +1441,18 @@ export default function PersonalKPIView() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {displayTasks.length === 0 ? (
+              {filteredDisplayTasks.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={10} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
-                      Chưa có nhiệm vụ KPI nào được giao cho bạn trong kỳ này.
+                      {taskStatusFilter === 'REJECTED'
+                        ? 'Không có nhiệm vụ nào bị từ chối trong kỳ này.'
+                        : 'Chưa có nhiệm vụ KPI nào trong danh mục lọc này.'}
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                displayTasks.map((t) => {
+                filteredDisplayTasks.map((t) => {
                   const targetQty = Number(t.targetQty) || 1;
                   const actualQty = Number(t.actualQty) || 0;
                   const progress = Math.min(100, Math.round((actualQty / targetQty) * 100));
@@ -1262,7 +1463,7 @@ export default function PersonalKPIView() {
                         <Typography variant="body2" sx={{ fontWeight: 700 }}>
                           {t.taskName}
                         </Typography>
-                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
                           <Typography variant="caption" color="text.secondary">
                             {t.masterCode || 'KPI-01'} • Hạn: {t.deadline || 'Chưa có'}
                           </Typography>
@@ -1271,6 +1472,13 @@ export default function PersonalKPIView() {
                             size="small"
                             variant="outlined"
                             sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
+                          />
+                          <Chip
+                            label={`Kỳ: ${getTaskPeriodDisplay(t)}`}
+                            size="small"
+                            variant="outlined"
+                            color="info"
+                            sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }}
                           />
                           {t.isBonus && (
                             <Chip
@@ -1281,6 +1489,19 @@ export default function PersonalKPIView() {
                             />
                           )}
                         </Stack>
+                      </TableCell>
+                      <TableCell align="center">
+                        <Chip
+                          label={getTaskPeriodDisplay(t)}
+                          size="small"
+                          color="primary"
+                          variant="filled"
+                          sx={{
+                            fontWeight: 800,
+                            fontSize: '0.75rem',
+                            letterSpacing: '0.2px',
+                          }}
+                        />
                       </TableCell>
                       <TableCell>
                         <Typography variant="body2">{t.outputProduct || 'Báo cáo'}</Typography>
@@ -1359,6 +1580,31 @@ export default function PersonalKPIView() {
                       <TableCell align="center">
                         {(() => {
                           const effStatus = getEffectiveTaskStatus(t);
+                          const isRejected = t.approvalStatus === 'Từ chối' || effStatus === 'Đã từ chối' || effStatus === 'Từ chối';
+                          if (isRejected) {
+                            return (
+                              <Tooltip
+                                title={
+                                  t.approverName
+                                    ? `Bị từ chối bởi: ${t.approverName}. Nhiệm vụ không được phê duyệt.`
+                                    : 'Nhiệm vụ đề xuất bị cấp trên từ chối phê duyệt.'
+                                }
+                                arrow
+                              >
+                                <Chip
+                                  label="Đã từ chối"
+                                  size="small"
+                                  color="error"
+                                  sx={{
+                                    fontWeight: 700,
+                                    bgcolor: '#fee2e2',
+                                    color: '#b91c1c',
+                                    border: '1px solid #fca5a5',
+                                  }}
+                                />
+                              </Tooltip>
+                            );
+                          }
                           if (effStatus === 'Đã hoàn thành') {
                             return <Chip label="Đã hoàn thành" size="small" color="success" sx={{ fontWeight: 600 }} />;
                           }
@@ -1406,25 +1652,41 @@ export default function PersonalKPIView() {
                       <TableCell align="right">
                         {(() => {
                           const isPending = t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt';
-                          const disabled = !canUpdate || isApproved || isPending;
-                          const tooltipTitle = isPending
-                            ? 'Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ'
-                            : isApproved
-                            ? 'Kỳ đánh giá này đã được chốt và phê duyệt chính thức'
-                            : 'Cập nhật tiến độ & khối lượng thực tế';
+                          const isRejected = t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối';
+                          const disabled = !canUpdate || isApproved || isPending || isRejected;
+                          const tooltipTitle = isRejected
+                            ? 'Nhiệm vụ đã bị từ chối phê duyệt, không thể cập nhật tiến độ'
+                            : isPending
+                              ? 'Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ'
+                              : isApproved
+                                ? 'Kỳ đánh giá này đã được chốt và phê duyệt chính thức'
+                                : 'Cập nhật tiến độ & khối lượng thực tế';
                           return (
-                            <Tooltip title={tooltipTitle} arrow placement="top">
-                              <span>
-                                <IconButton
-                                  size="small"
-                                  color="primary"
-                                  disabled={disabled}
-                                  onClick={() => handleOpenProgress(t)}
-                                >
-                                  <EditRoundedIcon fontSize="small" />
-                                </IconButton>
-                              </span>
-                            </Tooltip>
+                            <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                              <Tooltip title={tooltipTitle} arrow placement="top">
+                                <span>
+                                  <IconButton
+                                    size="small"
+                                    color="primary"
+                                    disabled={disabled}
+                                    onClick={() => handleOpenProgress(t)}
+                                  >
+                                    <EditRoundedIcon fontSize="small" />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                              {isRejected && (
+                                <Tooltip title="Xóa đề xuất đã bị từ chối khỏi danh sách" arrow placement="top">
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    onClick={() => handleDeleteProposedTask(t.id)}
+                                  >
+                                    <DeleteOutlineRoundedIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                            </Stack>
                           );
                         })()}
                       </TableCell>
@@ -1600,8 +1862,8 @@ export default function PersonalKPIView() {
           {isApproved
             ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - Đã duyệt`
             : isSubmitted
-            ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - ${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'}`
-            : `Gửi Đánh giá ${isYear ? 'Năm' : 'Quý'} (${selectedPeriodDisplay}) & Tự chấm 30đ Phẩm chất`}
+              ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - ${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'}`
+              : `Gửi Đánh giá ${periodLabelType} (${selectedPeriodDisplay}) & Tự chấm 30đ Phẩm chất`}
         </DialogTitle>
         <DialogContent dividers>
           {/* Header Thông tin cán bộ */}
@@ -1695,7 +1957,7 @@ export default function PersonalKPIView() {
             <Box sx={{ width: '100%' }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75 }}>
                 <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  Tỷ lệ KPI {isYear ? 'Năm' : 'Quý'}:
+                  Tỷ lệ KPI {periodLabelType}:
                 </Typography>
                 <Chip
                   label={`${kpiQuarterlyResult?.kpiRate ?? 0}%`}
@@ -1707,7 +1969,7 @@ export default function PersonalKPIView() {
 
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75, mt: 0.5 }}>
                 <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  Điểm KPI chính thức của {isYear ? 'Năm' : 'Quý'} (Max 70đ):
+                  Điểm KPI chính thức của {periodLabelType} (Max 70đ):
                 </Typography>
                 <Box sx={{ minWidth: 90, textAlign: 'right' }}>
                   <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1 }}>
@@ -1852,10 +2114,10 @@ export default function PersonalKPIView() {
             multiline
             rows={3}
             disabled={isApproved}
-            label={`Bản tự kiểm điểm, nhận xét kết quả công tác trong ${isYear ? 'năm' : 'quý'}`}
+            label={`Bản tự kiểm điểm, nhận xét kết quả công tác trong ${periodLabelType.toLowerCase()}`}
             value={selfComment}
             onChange={(e) => setSelfComment(e.target.value)}
-            placeholder={`Nêu rõ ưu điểm, tinh thần trách nhiệm và kết quả thực hiện nhiệm vụ trong ${isYear ? 'năm' : 'quý'}...`}
+            placeholder={`Nêu rõ ưu điểm, tinh thần trách nhiệm và kết quả thực hiện nhiệm vụ trong ${periodLabelType.toLowerCase()}...`}
           />
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
@@ -1879,7 +2141,7 @@ export default function PersonalKPIView() {
                 color="secondary"
                 sx={{ textTransform: 'none', fontWeight: 700, color: '#fff' }}
               >
-                {isSubmitted ? `Cập nhật & Gửi lại đánh giá ${isYear ? 'Năm' : 'Quý'}` : `Xác nhận Gửi đánh giá ${isYear ? 'Năm' : 'Quý'}`}
+                {isSubmitted ? `Cập nhật & Gửi lại đánh giá ${periodLabelType}` : `Xác nhận Gửi đánh giá ${periodLabelType}`}
               </Button>
             </>
           )}
@@ -2149,6 +2411,57 @@ export default function PersonalKPIView() {
             onChange={(e) => setProposeForm({ ...proposeForm, outputProduct: e.target.value })}
             sx={{ mb: 2 }}
           />
+
+          <TextField
+            select
+            fullWidth
+            label="Chu kỳ Tháng thực hiện nhiệm vụ"
+            InputLabelProps={{ shrink: true }}
+            value={
+              proposeForm.period ||
+              (normalizePeriodAndQuarter(selectedPeriod).isMonth && !normalizePeriodAndQuarter(selectedPeriod).isPast
+                ? normalizePeriodAndQuarter(selectedPeriod).periodKey
+                : currentMonthInfo.periodKey)
+            }
+            onChange={(e) => {
+              const val = e.target.value;
+              const n = normalizePeriodAndQuarter(val);
+              setProposeForm({
+                ...proposeForm,
+                period: n.periodKey,
+                quarter: n.quarterDisplay,
+              });
+            }}
+            sx={{ mb: 2 }}
+            SelectProps={{
+              IconComponent: KeyboardArrowDownRoundedIcon,
+              MenuProps: { PaperProps: { sx: { maxHeight: 380 } } },
+            }}
+          >
+            <ListSubheader
+              sx={{
+                fontWeight: 800,
+                bgcolor: 'action.hover',
+                color: 'primary.main',
+                lineHeight: '32px',
+              }}
+            >
+              Chu kỳ Tháng (Nhiệm vụ cá nhân theo tháng)
+            </ListSubheader>
+            {months.map((opt) => (
+              <MenuItem
+                key={opt.value}
+                value={opt.value}
+                disabled={opt.isPast}
+                sx={{
+                  pl: 3,
+                  ...(opt.isPast && { color: 'text.disabled' }),
+                }}
+              >
+                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
+              </MenuItem>
+            ))}
+          </TextField>
 
           <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
             <TextField

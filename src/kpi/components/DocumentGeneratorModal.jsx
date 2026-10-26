@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -17,6 +17,7 @@ import FormLabel from '@mui/material/FormLabel';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
+import ListSubheader from '@mui/material/ListSubheader';
 import Paper from '@mui/material/Paper';
 import Divider from '@mui/material/Divider';
 import Chip from '@mui/material/Chip';
@@ -34,13 +35,12 @@ import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-const EVALUATION_PERIODS = [
-  { value: 'Q1_2026', label: 'Quý I / 2026' },
-  { value: 'Q2_2026', label: 'Quý II / 2026' },
-  { value: 'Q3_2026', label: 'Quý III / 2026' },
-  { value: 'Q4_2026', label: 'Quý IV / 2026' },
-  { value: 'YEAR_2026', label: 'Cả năm 2026' },
-];
+
+import { getFullYearQuarterOptions, normalizePeriodAndQuarter } from '../utils/quarterHelper';
+import { calculateAllStaffEvaluationsForPeriod } from '../utils/yearWorkflowHelper';
+import { isSameDept } from '../../rbac/roles';
+
+const { allOptions: EVALUATION_PERIODS, groupedOptions } = getFullYearQuarterOptions();
 
 export default function DocumentGeneratorModal({
   open,
@@ -49,17 +49,24 @@ export default function DocumentGeneratorModal({
   initialDocType = 'DECISION_39',
   staffList = [],
   departments = [],
+  allStaffs = [],
+  assignedTasks = [],
+  evaluations = [],
+  vtvls = [],
+  selectedDeptId = 'ALL',
+  onPeriodChange = null,
 }) {
-  const [selectedDocType, setSelectedDocType] = useState(initialDocType); // 'REPORT_05' | 'DECISION_39'
+  const resolveDocType = (type) => (type === 'REPORT_MONTH' ? 'REPORT_05' : type);
+  const [selectedDocType, setSelectedDocType] = useState(resolveDocType(initialDocType)); // 'REPORT_05' | 'DECISION_39'
   const [period, setPeriod] = useState(initialPeriod);
 
-  // Sync state whenever modal is opened
+  // Sync state whenever modal is opened OR when initialPeriod changes
   const [prevOpen, setPrevOpen] = useState(open);
   if (open !== prevOpen) {
     setPrevOpen(open);
     if (open) {
       if (initialPeriod) setPeriod(initialPeriod);
-      if (initialDocType) setSelectedDocType(initialDocType);
+      if (initialDocType) setSelectedDocType(resolveDocType(initialDocType));
     }
   }
 
@@ -73,18 +80,58 @@ export default function DocumentGeneratorModal({
   }, []);
 
   const periodLabel = useMemo(() => {
-    return EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Cả năm 2026';
+    return normalizePeriodAndQuarter(period).display || EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Cả năm 2026';
   }, [period]);
 
   const isYearPeriod = Boolean(period && (period.startsWith('YEAR_') || period.includes('Năm') || period === 'YEAR_2026'));
+  const isMonthPeriod = Boolean(period && (period.startsWith('M') || normalizePeriodAndQuarter(period).isMonth));
 
-  // Sắp xếp danh sách cán bộ theo điểm giảm dần
+  const [modalDeptId, setModalDeptId] = useState(selectedDeptId || 'ALL');
+
+  useEffect(() => {
+    if (selectedDeptId) {
+      setModalDeptId(selectedDeptId);
+    }
+  }, [selectedDeptId]);
+
+  // TÍNH TOÁN DỮ LIỆU ĐÁNH GIÁ ĐỘNG THEO ĐÚNG KỲ ĐANG CHỌN (REAL-TIME RECALCULATION)
+  const computedStaffs = useMemo(() => {
+    if (allStaffs && allStaffs.length > 0 && assignedTasks && evaluations) {
+      let calc = calculateAllStaffEvaluationsForPeriod({
+        staffs: allStaffs,
+        assignedTasks,
+        evaluations,
+        period,
+        departments,
+        vtvls,
+        allAvailableStaffs: allStaffs,
+      });
+
+      // Lọc theo phòng ban nếu có chọn phòng cụ thể trong modal
+      if (modalDeptId && modalDeptId !== 'ALL') {
+        calc = calc.filter((s) => isSameDept(s.deptId || s.department, modalDeptId, departments));
+      }
+
+      return calc;
+    }
+    return staffList;
+  }, [allStaffs, assignedTasks, evaluations, period, departments, vtvls, modalDeptId, staffList]);
+
+  // Sắp xếp danh sách cán bộ theo điểm giảm dần (cán bộ chưa chốt điểm xếp ở dưới)
   const displayStaffs = useMemo(() => {
-    return [...staffList].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
-  }, [staffList]);
+    return [...computedStaffs].sort((a, b) => {
+      const scoreA = a.totalScore !== null && a.totalScore !== undefined ? Number(a.totalScore) : -1;
+      const scoreB = b.totalScore !== null && b.totalScore !== undefined ? Number(b.totalScore) : -1;
+      return scoreB - scoreA;
+    });
+  }, [computedStaffs]);
 
-  // Calculations from staffList
+  // Calculations from displayStaffs
   const totalStaff = displayStaffs.length;
+  const evaluatedStaffs = displayStaffs.filter((s) => s.grade !== 'Chưa đánh giá' && s.totalScore !== null && s.totalScore !== undefined);
+  const totalEvaluated = evaluatedStaffs.length;
+  const unevaluatedCount = totalStaff - totalEvaluated;
+
   const excellentStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành xuất sắc nhiệm vụ');
   const goodStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành tốt nhiệm vụ');
   const completedStaffs = displayStaffs.filter((s) => s.grade === 'Hoàn thành nhiệm vụ');
@@ -99,10 +146,27 @@ export default function DocumentGeneratorModal({
   const goodPct = totalStaff > 0 ? ((goodCount / totalStaff) * 100).toFixed(1) : 0;
   const completedPct = totalStaff > 0 ? ((completedCount / totalStaff) * 100).toFixed(1) : 0;
   const failedPct = totalStaff > 0 ? ((failedCount / totalStaff) * 100).toFixed(1) : 0;
+  const unevaluatedPct = totalStaff > 0 ? ((unevaluatedCount / totalStaff) * 100).toFixed(1) : 0;
 
-  const avgScore = totalStaff > 0
-    ? (staffList.reduce((sum, s) => sum + (s.totalScore || 0), 0) / totalStaff).toFixed(1)
-    : 0;
+  // Điểm trung bình chỉ tính cho cán bộ đã có kết quả đánh giá (không tính điểm mặc định khi chưa đánh giá)
+  const avgScore = totalEvaluated > 0
+    ? (evaluatedStaffs.reduce((sum, s) => sum + Number(s.totalScore), 0) / totalEvaluated).toFixed(1)
+    : null;
+
+  // Handler khi chuyển đổi kỳ trong modal
+  const handlePeriodChange = (newPeriod) => {
+    setPeriod(newPeriod);
+    const norm = normalizePeriodAndQuarter(newPeriod);
+    if (norm.isYear) {
+      setSelectedDocType('DECISION_39');
+    } else {
+      setSelectedDocType('REPORT_05');
+    }
+    if (onPeriodChange) {
+      onPeriodChange(newPeriod);
+    }
+  };
+
 
   // In / Lưu PDF: Chỉ lấy duy nhất phần văn bản hành chính từ Header quốc hiệu đến Nơi nhận và Ký tên
   const handlePrint = () => {
@@ -257,9 +321,9 @@ export default function DocumentGeneratorModal({
           }}
         >
           <Grid container spacing={2} alignItems="center">
-            <Grid size={{ xs: 12, md: 7 }}>
+            <Grid size={{ xs: 12, md: 5 }}>
               <FormControl component="fieldset">
-                <FormLabel component="legend" sx={{ fontWeight: 700, fontSize: '0.85rem', mb: 0.5 }}>
+                <FormLabel component="legend" sx={{ fontWeight: 700, fontSize: '0.82rem', mb: 0.5 }}>
                   Chọn Biểu mẫu Văn bản Dự thảo:
                 </FormLabel>
                 <RadioGroup
@@ -272,7 +336,7 @@ export default function DocumentGeneratorModal({
                     control={<Radio size="small" />}
                     label={
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        Dự thảo Báo cáo Tổng hợp Quý (HD 05-HD/TU)
+                        {isMonthPeriod ? 'Báo cáo Tháng (05-HD/TU)' : 'Báo cáo Quý (05-HD/TU)'}
                       </Typography>
                     }
                   />
@@ -281,7 +345,7 @@ export default function DocumentGeneratorModal({
                     control={<Radio size="small" />}
                     label={
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        Dự thảo Quyết định Xếp loại Năm (QĐ 39-QĐ/TU)
+                        Quyết định Năm (39-QĐ/TU)
                       </Typography>
                     }
                   />
@@ -289,18 +353,52 @@ export default function DocumentGeneratorModal({
               </FormControl>
             </Grid>
 
-            <Grid size={{ xs: 12, md: 5 }}>
+            <Grid size={{ xs: 12, sm: 6, md: 3.5 }}>
               <FormControl fullWidth size="small">
                 <InputLabel id="doc-period-select-label">Kỳ thống kê</InputLabel>
                 <Select
                   labelId="doc-period-select-label"
                   value={period}
                   label="Kỳ thống kê"
-                  onChange={(e) => setPeriod(e.target.value)}
+                  onChange={(e) => handlePeriodChange(e.target.value)}
                 >
-                  {EVALUATION_PERIODS.map((p) => (
-                    <MenuItem key={p.value} value={p.value}>
-                      {p.label}
+                  {groupedOptions.map((grp) => [
+                    <ListSubheader
+                      key={grp.group}
+                      sx={{
+                        fontWeight: 800,
+                        bgcolor: 'action.hover',
+                        color: 'primary.main',
+                        lineHeight: '32px',
+                      }}
+                    >
+                      {grp.group}
+                    </ListSubheader>,
+                    ...grp.items.map((p) => (
+                      <MenuItem key={p.value} value={p.value} sx={{ pl: 3 }}>
+                        {p.label}
+                      </MenuItem>
+                    )),
+                  ])}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            <Grid size={{ xs: 12, sm: 6, md: 3.5 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="doc-scope-dept-label">Phạm vi cơ quan / Phòng</InputLabel>
+                <Select
+                  labelId="doc-scope-dept-label"
+                  value={modalDeptId}
+                  label="Phạm vi cơ quan / Phòng"
+                  onChange={(e) => setModalDeptId(e.target.value)}
+                >
+                  <MenuItem value="ALL">
+                    <strong>Toàn cơ quan ({allStaffs?.length || displayStaffs.length} cán bộ)</strong>
+                  </MenuItem>
+                  {departments.map((d) => (
+                    <MenuItem key={d.id} value={d.id}>
+                      {d.name}
                     </MenuItem>
                   ))}
                 </Select>
@@ -385,7 +483,9 @@ export default function DocumentGeneratorModal({
                   mb: 3,
                 }}
               >
-                Tổng hợp kết quả đánh giá, xếp loại chất lượng cán bộ, công chức {periodLabel}
+                {isMonthPeriod
+                  ? `Kết quả theo dõi, đánh giá công tác cán bộ ${periodLabel}`
+                  : `Tổng hợp kết quả đánh giá, xếp loại chất lượng cán bộ, công chức ${periodLabel}`}
                 <br />
                 <span style={{ fontSize: '11pt', fontWeight: 'normal', fontStyle: 'italic' }}>
                   (Theo Hướng dẫn số 05-HD/TU ngày 22/12/2023 của Ban Thường vụ Tỉnh ủy)
@@ -393,14 +493,22 @@ export default function DocumentGeneratorModal({
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
-                Căn cứ Quy định số 39-QĐ/TU của Ban Thường vụ Tỉnh ủy về quản lý, đánh giá chất lượng cán bộ; thực hiện Hướng dẫn số 05-HD/TU về việc theo dõi, chấm điểm KPI và đánh giá công chức, viên chức cơ quan chuyên trách tham mưu Tỉnh ủy; Ban Tổ chức Tỉnh ủy báo cáo tổng hợp kết quả đánh giá {periodLabel} như sau:
+                Căn cứ Quy định số 39-QĐ/TU của Ban Thường vụ Tỉnh ủy về quản lý, đánh giá chất lượng cán bộ; thực hiện Hướng dẫn số 05-HD/TU về việc theo dõi, chấm điểm KPI và đánh giá công chức, viên chức cơ quan chuyên trách tham mưu Tỉnh ủy; Ban Tổ chức Tỉnh ủy báo cáo tổng hợp kết quả {isMonthPeriod ? 'theo dõi, đánh giá' : 'đánh giá'} {periodLabel} như sau:
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12.5pt', fontWeight: 'bold', mb: 1 }}>
                 I. TÌNH HÌNH TỔ CHỨC VÀ KẾT QUẢ ĐÁNH GIÁ CHUNG
               </Typography>
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
-                Tổng số cán bộ, công chức, người lao động tham gia đánh giá, chấm điểm KPI trong kỳ: <strong>{totalStaff}</strong> đồng chí thuộc {departments.length} phòng ban chuyên môn. Điểm trung bình toàn đơn vị đạt <strong>{avgScore} / 100 điểm</strong>.
+                {totalEvaluated > 0 ? (
+                  <>
+                    Tổng số cán bộ, công chức, người lao động thuộc diện theo dõi, đánh giá KPI trong kỳ: <strong>{totalStaff}</strong> đồng chí thuộc {departments.length} phòng ban chuyên môn (trong đó đã có kết quả đánh giá: <strong>{totalEvaluated}/{totalStaff}</strong> đồng chí). Điểm trung bình các đồng chí đã có kết quả đạt <strong>{avgScore} / 100 điểm</strong>.
+                  </>
+                ) : (
+                  <>
+                    Tổng số cán bộ, công chức, người lao động thuộc diện theo dõi, đánh giá KPI trong kỳ: <strong>{totalStaff}</strong> đồng chí thuộc {departments.length} phòng ban chuyên môn. Hiện tại kỳ đánh giá này đang trong quá trình theo dõi thực hiện nhiệm vụ, chưa có cán bộ chốt điểm xếp loại chính thức.
+                  </>
+                )}
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12.5pt', fontWeight: 'bold', mb: 1 }}>
@@ -448,6 +556,15 @@ export default function DocumentGeneratorModal({
                       <TableCell align="center"><strong>{failedCount}</strong></TableCell>
                       <TableCell align="center"><strong>{failedPct}%</strong></TableCell>
                     </TableRow>
+                    {unevaluatedCount > 0 && (
+                      <TableRow sx={{ fontStyle: 'italic', bgcolor: '#fffde7' }}>
+                        <TableCell align="center">5</TableCell>
+                        <TableCell sx={{ fontWeight: 'bold', color: 'text.secondary' }}>Chưa đánh giá / Đang theo dõi</TableCell>
+                        <TableCell align="center">Chưa chốt điểm kỳ này</TableCell>
+                        <TableCell align="center"><strong>{unevaluatedCount}</strong></TableCell>
+                        <TableCell align="center"><strong>{unevaluatedPct}%</strong></TableCell>
+                      </TableRow>
+                    )}
                     <TableRow sx={{ bgcolor: '#fafafa' }}>
                       <TableCell align="center" colSpan={3} sx={{ fontWeight: 'bold' }}>TỔNG CỘNG</TableCell>
                       <TableCell align="center" sx={{ fontWeight: 'bold' }}>{totalStaff}</TableCell>
@@ -483,8 +600,12 @@ export default function DocumentGeneratorModal({
                           <TableCell align="left" sx={{ fontWeight: 'bold' }}>{s.name}</TableCell>
                           <TableCell align="left">{s.deptName}</TableCell>
                           <TableCell align="left">{s.vtvlTitle}</TableCell>
-                          <TableCell align="center" sx={{ fontWeight: 700 }}>{s.totalScore}</TableCell>
-                          <TableCell align="center">{s.grade}</TableCell>
+                          <TableCell align="center" sx={{ fontWeight: 700 }}>
+                            {s.totalScore !== null && s.totalScore !== undefined ? s.totalScore : '—'}
+                          </TableCell>
+                          <TableCell align="center" sx={{ color: s.grade === 'Chưa đánh giá' ? 'text.secondary' : 'inherit', fontStyle: s.grade === 'Chưa đánh giá' ? 'italic' : 'normal' }}>
+                            {s.grade}
+                          </TableCell>
                         </TableRow>
                       ))
                     ) : (
@@ -589,9 +710,14 @@ export default function DocumentGeneratorModal({
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1, pl: 4 }}>
                 3. <strong>Hoàn thành nhiệm vụ:</strong> {completedCount} đồng chí (chiếm {completedPct}%).
               </Typography>
-              <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, pl: 4 }}>
+              <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: unevaluatedCount > 0 ? 1 : 1.5, pl: 4 }}>
                 4. <strong>Không hoàn thành nhiệm vụ:</strong> {failedCount} đồng chí (chiếm {failedPct}%).
               </Typography>
+              {unevaluatedCount > 0 && (
+                <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, pl: 4, fontStyle: 'italic', color: '#555' }}>
+                  5. <strong>Chưa xếp loại / Đang theo dõi tiến độ:</strong> {unevaluatedCount} đồng chí (chiếm {unevaluatedPct}%).
+                </Typography>
+              )}
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
                 <strong>Điều 2.</strong> Kết quả này là căn cứ để thực hiện công tác quy hoạch, đào tạo, bổ nhiệm, khen thưởng và thực hiện chính sách cán bộ {period === 'YEAR_2026' ? 'năm 2026' : periodLabel} theo quy định của Đảng và Nhà nước.
@@ -665,7 +791,7 @@ export default function DocumentGeneratorModal({
                             <TableCell align="center" sx={{ fontWeight: 700, color: '#0d47a1' }}>
                               {s.totalScore !== null && s.totalScore !== undefined ? s.totalScore : '—'}
                             </TableCell>
-                            <TableCell align="center" sx={{ fontWeight: 600 }}>
+                            <TableCell align="center" sx={{ fontWeight: 600, color: s.grade === 'Chưa đánh giá' ? 'text.secondary' : 'inherit', fontStyle: s.grade === 'Chưa đánh giá' ? 'italic' : 'normal' }}>
                               {s.grade}
                               {s.isCapped && (
                                 <span style={{ display: 'block', fontSize: '8.5pt', color: '#c62828', fontStyle: 'italic', fontWeight: 'normal' }}>
@@ -760,4 +886,10 @@ DocumentGeneratorModal.propTypes = {
   initialPeriod: PropTypes.string,
   staffList: PropTypes.array,
   departments: PropTypes.array,
+  allStaffs: PropTypes.array,
+  assignedTasks: PropTypes.array,
+  evaluations: PropTypes.array,
+  vtvls: PropTypes.array,
+  selectedDeptId: PropTypes.string,
+  onPeriodChange: PropTypes.func,
 };

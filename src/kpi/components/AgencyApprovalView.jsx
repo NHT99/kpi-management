@@ -37,21 +37,24 @@ import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import HourglassEmptyRoundedIcon from '@mui/icons-material/HourglassEmptyRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
+import ListSubheader from '@mui/material/ListSubheader';
 
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
 import { getAllUsers } from '../../rbac/users';
 import { ROLES, getEffectiveManagedDeptId, isTrueDeptHead, isDeputyDeptHead, getUserRoleBadge, getDirectSupervisorForStaff, isSameDept, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
-import { getFullYearQuarterOptions } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isTaskInPeriod, normalizePeriodAndQuarter } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import DocumentGeneratorModal from './DocumentGeneratorModal';
 import { isQuarterEligibleForSeparateDecision } from '../utils/yearWorkflowHelper';
+import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 
 import {
   INITIAL_AGENCY_APPROVALS,
@@ -60,7 +63,7 @@ import {
 } from '../data/mockKPIData';
 import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 
-const { evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
+const { evaluationOptions: PERIOD_OPTIONS, groupedOptions } = getFullYearQuarterOptions();
 
 export default function AgencyApprovalView() {
   const { currentUser, role, hasPermission } = useAuth();
@@ -99,6 +102,12 @@ export default function AgencyApprovalView() {
     decisionNumber: '128/QĐ-BQL',
     councilNote:
       'Hội đồng đánh giá thẩm định và thống nhất biểu quyết 100% công nhận kết quả đánh giá KPI của các phòng chuyên môn.',
+  });
+
+  // Dialog từ chối / yêu cầu đánh giá lại
+  const [rejectDialog, setRejectDialog] = useState({
+    open: false,
+    reason: '',
   });
 
   const [notification, setNotification] = useState('');
@@ -194,8 +203,12 @@ export default function AgencyApprovalView() {
     if (selectedPeriod === 'Q3_2026' || selectedPeriod === 'YEAR_2026' || selectedPeriod === 'Q2_2026' || selectedPeriod === 'Q1_2026') {
       return true;
     }
-    return evaluations.some((e) => e.period === selectedPeriod);
-  }, [selectedPeriod, evaluations, isQ4Period]);
+    const hasEval = evaluations.some(
+      (e) => e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === selectedPeriod
+    );
+    if (hasEval) return true;
+    return assignedTasks.some((t) => isTaskInPeriod(t, selectedPeriod));
+  }, [selectedPeriod, evaluations, isQ4Period, assignedTasks]);
 
   // Dynamic Department Summaries calculated from real departments and evaluations
   const dynamicDeptSummaries = useMemo(() => {
@@ -287,8 +300,7 @@ export default function AgencyApprovalView() {
       const deptTasks = assignedTasks.filter((t) => {
         const matchesStaff = deptStaffList.some((s) => s.id === t.staffId || s.name === t.staffName);
         if (!matchesStaff) return false;
-        if (selectedPeriod === 'YEAR_2026') return true;
-        return t.period === selectedPeriod || (!t.period && selectedPeriod === 'Q4_2026');
+        return isTaskInPeriod(t, selectedPeriod);
       });
       const avgProgress = deptTasks.length > 0
         ? Math.round(deptTasks.reduce((sum, t) => sum + (Number(t.progress) || 0), 0) / deptTasks.length)
@@ -436,6 +448,62 @@ export default function AgencyApprovalView() {
     setApproveDialog((prev) => ({ ...prev, open: false }));
   };
 
+  const handleOpenReject = () => {
+    setRejectDialog({
+      open: true,
+      reason: '',
+    });
+  };
+
+  const handleConfirmReject = () => {
+    if (!rejectDialog.reason.trim()) return;
+    const reasonText = rejectDialog.reason.trim();
+    const newApproval = {
+      isApproved: false,
+      isRejected: true,
+      rejectReason: reasonText,
+      rejectedBy: `${currentUser.name} (${currentUser.title || 'Lãnh đạo Ban'})`,
+      rejectDate: new Date().toLocaleDateString('vi-VN'),
+    };
+
+    // 1. Lưu trạng thái từ chối vào agencyApprovals
+    setAgencyApprovals((prev) => ({
+      ...(prev || {}),
+      [selectedPeriod]: newApproval,
+    }));
+
+    // 2. Chuyển trạng thái các bản đánh giá của kỳ này sang REJECTED
+    setEvaluations((prev) => {
+      const list = prev || [];
+      return list.map((ev) => {
+        if (ev.period === selectedPeriod) {
+          return {
+            ...ev,
+            status: 'REJECTED',
+            rejectReason: reasonText,
+            rejectedBy: `${currentUser.name} (Lãnh đạo Ban)`,
+            rejectedTitle: currentUser.title || 'Lãnh đạo Ban',
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return ev;
+      });
+    });
+
+    // 3. Ghi log kiểm toán
+    logAction(
+      'Yêu cầu rà soát lại kết quả cấp Ban',
+      currentUser,
+      `Yêu cầu các đơn vị phòng ban rà soát lại kết quả KPI ${selectedPeriodLabel}. Lý do: ${reasonText}`,
+      'Thẩm định & Phê duyệt'
+    );
+
+    setNotification(
+      `Đã gửi yêu cầu từ chối và đề nghị các phòng ban rà soát lại kết quả KPI kỳ ${selectedPeriodLabel}!`
+    );
+    setRejectDialog({ open: false, reason: '' });
+  };
+
   return (
     <Box sx={{ width: '100%' }}>
       {notification && (
@@ -456,21 +524,11 @@ export default function AgencyApprovalView() {
             </Typography>
           </Box>
 
-          <FormControl size="small" sx={{ minWidth: 240, bgcolor: 'background.paper' }}>
-            <InputLabel id="agency-period-label">Kỳ đánh giá</InputLabel>
-            <Select
-              labelId="agency-period-label"
-              value={selectedPeriod}
-              label="Kỳ đánh giá"
-              onChange={(e) => setSelectedPeriod(e.target.value)}
-            >
-              {PERIOD_OPTIONS.map((opt) => (
-                <MenuItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          <PeriodMatrixPicker
+            label="Kỳ đánh giá"
+            value={selectedPeriod}
+            onChange={(newVal) => setSelectedPeriod(newVal)}
+          />
         </Box>
       </Card>
 
@@ -673,29 +731,53 @@ export default function AgencyApprovalView() {
                   </Typography>
                 </Box>
 
-                <Tooltip
-                  title={
-                    !isCurrentUserAgencyHead
-                      ? 'Chỉ Trưởng ban / Chủ tịch Hội đồng mới có thẩm quyền ký và ban hành Quyết định toàn cơ quan'
-                      : canApprove
-                      ? 'Phê duyệt chính thức và đóng kỳ đánh giá'
-                      : 'Bạn phải là Lãnh đạo Ban hoặc Quản trị viên để thực hiện hành động này'
-                  }
-                >
-                  <span>
-                    <Button
-                      variant="contained"
-                      color="error"
-                      size="large"
-                      disabled={!canApprove || !isCurrentUserAgencyHead}
-                      startIcon={<GavelRoundedIcon />}
-                      onClick={handleOpenApprove}
-                      sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 3 }}
-                    >
-                      Phê duyệt kết quả toàn cơ quan
-                    </Button>
-                  </span>
-                </Tooltip>
+                <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+                  <Tooltip
+                    title={
+                      !isCurrentUserAgencyHead
+                        ? 'Chỉ Trưởng ban / Chủ tịch Hội đồng mới có thẩm quyền yêu cầu rà soát'
+                        : 'Từ chối phê duyệt và yêu cầu các phòng rà soát, đánh giá lại'
+                    }
+                  >
+                    <span>
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        size="large"
+                        disabled={!canApprove || !isCurrentUserAgencyHead}
+                        startIcon={<CancelRoundedIcon />}
+                        onClick={handleOpenReject}
+                        sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 2.5 }}
+                      >
+                        Từ chối / Yêu cầu rà soát lại
+                      </Button>
+                    </span>
+                  </Tooltip>
+
+                  <Tooltip
+                    title={
+                      !isCurrentUserAgencyHead
+                        ? 'Chỉ Trưởng ban / Chủ tịch Hội đồng mới có thẩm quyền ký và ban hành Quyết định toàn cơ quan'
+                        : canApprove
+                        ? 'Phê duyệt chính thức và đóng kỳ đánh giá'
+                        : 'Bạn phải là Lãnh đạo Ban hoặc Quản trị viên để thực hiện hành động này'
+                    }
+                  >
+                    <span>
+                      <Button
+                        variant="contained"
+                        color="success"
+                        size="large"
+                        disabled={!canApprove || !isCurrentUserAgencyHead}
+                        startIcon={<GavelRoundedIcon />}
+                        onClick={handleOpenApprove}
+                        sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 3 }}
+                      >
+                        Phê duyệt kết quả toàn cơ quan
+                      </Button>
+                    </span>
+                  </Tooltip>
+                </Stack>
               </Stack>
             </Card>
           )}
@@ -1016,11 +1098,61 @@ export default function AgencyApprovalView() {
           <Button
             onClick={handleConfirmApprove}
             variant="contained"
-            color="error"
+            color="success"
             startIcon={<GavelRoundedIcon />}
             sx={{ textTransform: 'none', fontWeight: 700 }}
           >
             Ký duyệt & Ban hành Quyết định
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog: Từ chối / Yêu cầu rà soát lại kết quả cấp Ban */}
+      <Dialog
+        open={rejectDialog.open}
+        onClose={() => setRejectDialog({ open: false, reason: '' })}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <CancelRoundedIcon /> Từ chối phê duyệt & Yêu cầu rà soát lại kết quả
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <Alert severity="warning" sx={{ mb: 2, borderRadius: 2 }}>
+            Hành động này sẽ gửi thông báo yêu cầu các đơn vị phòng ban rà soát, điều chỉnh lại hồ sơ đánh giá KPI kỳ{' '}
+            <strong>{selectedPeriodLabel}</strong>. Trạng thái đánh giá sẽ chuyển thành <strong>Bị từ chối</strong> để cấp dưới nộp lại.
+          </Alert>
+
+          <TextField
+            fullWidth
+            required
+            multiline
+            rows={4}
+            label="Lý do từ chối & Yêu cầu điều chỉnh (Bắt buộc)"
+            value={rejectDialog.reason}
+            onChange={(e) => setRejectDialog((prev) => ({ ...prev, reason: e.target.value }))}
+            placeholder="Ví dụ: Tỷ lệ Hoàn thành xuất sắc nhiệm vụ vượt quá trần quy định 20% theo Hướng dẫn 05-HD/TU; Một số cá nhân chưa cập nhật đủ minh chứng sản phẩm..."
+            error={rejectDialog.reason !== '' && !rejectDialog.reason.trim()}
+            helperText="Nêu rõ nội dung, phòng ban hoặc các chỉ tiêu cần thẩm định lại"
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button
+            onClick={() => setRejectDialog({ open: false, reason: '' })}
+            color="inherit"
+            sx={{ textTransform: 'none' }}
+          >
+            Hủy bỏ
+          </Button>
+          <Button
+            onClick={handleConfirmReject}
+            variant="contained"
+            color="error"
+            disabled={!rejectDialog.reason.trim()}
+            startIcon={<CancelRoundedIcon />}
+            sx={{ textTransform: 'none', fontWeight: 700 }}
+          >
+            Xác nhận từ chối & Yêu cầu nộp lại
           </Button>
         </DialogActions>
       </Dialog>

@@ -22,6 +22,7 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Switch from '@mui/material/Switch';
 import Alert from '@mui/material/Alert';
 import Tooltip from '@mui/material/Tooltip';
+import Divider from '@mui/material/Divider';
 import Paper from '@mui/material/Paper';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -369,6 +370,7 @@ export default function AccountManagementView() {
     setModalOpen(false);
   };
 
+
   // Helper: Role Chip styling
   const renderRoleChip = (roleKey, staff) => {
     const badge = getUserRoleBadge({ role: roleKey, title: staff?.vtvlTitle || staff?.title });
@@ -578,6 +580,7 @@ export default function AccountManagementView() {
                 }}
                 sx={{ minWidth: 260, bgcolor: 'background.paper', borderRadius: 1.5 }}
               />
+
             </Stack>
           </Stack>
         </Box>
@@ -1135,6 +1138,8 @@ export default function AccountManagementView() {
           </Button>
         </DialogActions>
       </Dialog>
+
     </Box>
   );
 }
+

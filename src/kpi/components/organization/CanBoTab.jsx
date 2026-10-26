@@ -73,6 +73,7 @@ import {
 } from '../../../rbac/roles';
 import { useAuth } from '../../../rbac/AuthContext';
 import { logAction } from '../../utils/auditLogger';
+import { normalizePeriodAndQuarter } from '../../utils/quarterHelper';
 
 // Bộ phát sinh hồ sơ cán bộ công chức & đảng viên toàn diện (chuẩn Mẫu 2C-BNV / 2C-TW và CSDL Quốc gia CBCCVC)
 // Ngẫu nhiên hóa logic, thực tế và nhất quán (deterministic) theo định danh của từng cán bộ
@@ -2512,15 +2513,7 @@ export default function CanBoTab() {
                             selectedStaffDetails.evals.map((eRecord) => (
                               <TableRow key={eRecord.id || eRecord.period} hover>
                                 <TableCell sx={{ fontWeight: 700 }}>
-                                  {eRecord.period === 'YEAR_2026'
-                                    ? 'Cả năm 2026'
-                                    : eRecord.period === 'Q3_2026'
-                                      ? 'Quý III/2026'
-                                      : eRecord.period === 'Q2_2026'
-                                        ? 'Quý II/2026'
-                                        : eRecord.period === 'Q1_2026'
-                                          ? 'Quý I/2026'
-                                          : eRecord.period}
+                                  {normalizePeriodAndQuarter(eRecord.period).quarterDisplay}
                                 </TableCell>
                                 <TableCell align="center" sx={{ fontWeight: 700, color: 'primary.main' }}>
                                   {eRecord.autoKPIScore !== undefined ? `${Number(eRecord.autoKPIScore).toFixed(1)}/70` : '--/70'}

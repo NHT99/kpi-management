@@ -29,6 +29,7 @@ import TablePagination from '@mui/material/TablePagination';
 import RateReviewRoundedIcon from '@mui/icons-material/RateReviewRounded';
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
@@ -39,6 +40,7 @@ import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
+import ListSubheader from '@mui/material/ListSubheader';
 
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
@@ -49,10 +51,11 @@ import { INITIAL_STAFFS, INITIAL_DEPARTMENTS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
 import { calculateTotalKPIScore, calculateYearlyKPI, determineGrade, determineYearlyGrade, checkYearlyGradeCap } from '../utils/scoringEngine';
 import { logAction } from '../utils/auditLogger';
-import { getFullYearQuarterOptions, normalizePeriodAndQuarter } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, normalizePeriodAndQuarter, isTaskInPeriod } from '../utils/quarterHelper';
 import { getStaffQuarterlyEvaluations, isQuarterEligibleForSeparateDecision } from '../utils/yearWorkflowHelper';
+import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 
-const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS } = getFullYearQuarterOptions();
+const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS, groupedOptions } = getFullYearQuarterOptions();
 
 export default function DepartmentEvaluationView() {
   const { currentUser, role, hasPermission } = useAuth();
@@ -78,6 +81,13 @@ export default function DepartmentEvaluationView() {
     selfEthicsScore: null,
     hasSubmittedSelfEval: false,
     isApproved: false,
+  });
+
+  // Reject Modal State
+  const [rejectModal, setRejectModal] = useState({
+    open: false,
+    row: null,
+    reason: '',
   });
 
   // Phó phòng tuyệt đối không được truy cập mục Đánh giá cấp phòng
@@ -170,20 +180,15 @@ export default function DepartmentEvaluationView() {
       const userTasks = assignedTasks
         .filter((t) => t.staffId === staff.id || t.staffName === staff.name)
         .filter((t) => t.status !== 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt')
-        .filter((t) => {
-          const taskNorm = normalizePeriodAndQuarter(t.period || t.quarter || t.deadline);
-          if (normSelected.isYear) {
-            return taskNorm.year === normSelected.year;
-          }
-          return taskNorm.periodKey === normSelected.periodKey;
-        });
+        .filter((t) => isTaskInPeriod(t, selectedPeriod));
 
       const taskCount = userTasks.length;
       const hasTasks = taskCount > 0;
 
       // Find staff self-evaluation record
       const existingEval = evaluations.find(
-        (e) => (e.staffId === staff.id || e.staffName === staff.name) && e.period === selectedPeriod
+        (e) => (e.staffId === staff.id || e.staffName === staff.name) &&
+          (e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === normSelected.periodKey)
       );
 
       // Điểm KPI tính toán thực tế từ nhiệm vụ của kỳ:
@@ -196,13 +201,15 @@ export default function DepartmentEvaluationView() {
         ? Number(existingEval.autoKPIScore)
         : liveKPIScore;
 
-      // Cán bộ ĐÃ gửi bản tự đánh giá khi có bản ghi đánh giá và đã tự chấm điểm phẩm chất
+      // Cán bộ ĐÃ gửi bản tự đánh giá khi có bản ghi đánh giá và chưa bị từ chối
+      const isRejected = existingEval?.status === 'REJECTED';
       const hasSubmittedSelfEval = Boolean(
         existingEval &&
         (existingEval.status === 'PENDING_DEPT_LEADER' ||
          existingEval.status === 'PENDING_BAN_LEADER' ||
          existingEval.status === 'APPROVED' ||
-         existingEval.ethicsScore !== undefined)
+         existingEval.ethicsScore !== undefined) &&
+        !isRejected
       );
 
       const selfEthicsScore = hasSubmittedSelfEval && existingEval?.ethicsScore !== undefined
@@ -229,7 +236,9 @@ export default function DepartmentEvaluationView() {
       const capInfo = isYearPeriod ? checkYearlyGradeCap(quarterlyResults) : { isCapped: false, reason: '' };
       const grade = totalScore !== null
         ? (isYearPeriod ? determineYearlyGrade(totalScore, quarterlyResults) : determineGrade(totalScore))
-        : 'Chờ tự đánh giá';
+        : isRejected
+          ? 'Bị từ chối'
+          : 'Chờ tự đánh giá';
 
       return {
         id: staff.id,
@@ -242,6 +251,7 @@ export default function DepartmentEvaluationView() {
         autoKPIScore,
         selfEthicsScore,
         hasSubmittedSelfEval,
+        isRejected,
         bossEthicsScore,
         totalScore,
         grade,
@@ -271,7 +281,8 @@ export default function DepartmentEvaluationView() {
   // Handle Approve & Save Grade
   const handleApproveStaff = (row) => {
     if (!row.hasSubmittedSelfEval) {
-      showToast(`Cán bộ ${row.name} chưa gửi bản tự đánh giá Quý! Vui lòng chờ cấp dưới nộp trước khi phê duyệt.`, 'warning');
+      const periodLabelText = normSelected.isMonth ? 'Tháng' : normSelected.isYear ? 'Năm' : 'Quý';
+      showToast(`Cán bộ ${row.name} chưa gửi bản tự đánh giá ${periodLabelText}! Vui lòng chờ cấp dưới nộp trước khi phê duyệt.`, 'warning');
       return;
     }
     const bossScore = row.bossEthicsScore !== null && row.bossEthicsScore !== undefined
@@ -309,6 +320,40 @@ export default function DepartmentEvaluationView() {
       'Đánh giá Cấp phòng & Ban'
     );
     showToast(`Đã phê duyệt và chốt điểm thành công cho ${row.name}! Tổng điểm: ${finalTotal}/100đ.`, 'success');
+  };
+
+  // Handle Reject & Request Re-evaluation
+  const handleRejectStaff = (row, reason = '') => {
+    if (!row) return;
+    const updatedRecord = {
+      ...(row.evalRecord || {}),
+      staffId: row.id,
+      staffName: row.name,
+      period: selectedPeriod,
+      autoKPIScore: row.autoKPIScore,
+      ethicsScore: row.selfEthicsScore,
+      status: 'REJECTED',
+      rejectReason: reason || 'Bản tự đánh giá chưa đạt yêu cầu, đề nghị cán bộ rà soát và đánh giá lại.',
+      rejectedBy: currentUser.name,
+      rejectedTitle: currentUser.title,
+      updatedAt: new Date().toISOString(),
+    };
+
+    setEvaluations((prev) => {
+      const filtered = (prev || []).filter(
+        (e) => !((e.staffId === row.id || e.staffName === row.name) && e.period === selectedPeriod)
+      );
+      return [...filtered, updatedRecord];
+    });
+
+    logAction(
+      'Từ chối đánh giá KPI',
+      currentUser,
+      `Từ chối bản tự đánh giá của ${row.name} kỳ ${selectedPeriodLabel}. Lý do: ${reason}`,
+      'Đánh giá Cấp phòng & Ban'
+    );
+    showToast(`Đã từ chối và yêu cầu cán bộ ${row.name} đánh giá lại!`, 'info');
+    setRejectModal({ open: false, row: null, reason: '' });
   };
 
   // Open detailed modal for grading
@@ -352,8 +397,12 @@ export default function DepartmentEvaluationView() {
   // Kiểm tra nếu quý chưa diễn ra hoặc chưa có dữ liệu đánh giá:
   const hasPeriodData = useMemo(() => {
     if (selectedPeriod === currentQuarterInfo.periodKey || selectedPeriod === 'Q3_2026' || selectedPeriod === 'YEAR_2026' || selectedPeriod === 'Q1_2026' || selectedPeriod === 'Q2_2026') return true;
-    return evaluations.some((e) => e.period === selectedPeriod) || rows.length > 0;
-  }, [selectedPeriod, evaluations, currentQuarterInfo.periodKey, rows.length]);
+    const hasEval = evaluations.some(
+      (e) => e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === selectedPeriod
+    );
+    if (hasEval) return true;
+    return assignedTasks.some((t) => isTaskInPeriod(t, selectedPeriod)) || rows.some((r) => r.hasTasks);
+  }, [selectedPeriod, evaluations, currentQuarterInfo.periodKey, assignedTasks, rows]);
 
   if (!canView) {
     return (
@@ -398,22 +447,12 @@ export default function DepartmentEvaluationView() {
               </Box>
             </Box>
 
-            {/* Dropdown Kỳ đánh giá */}
-            <FormControl size="small" sx={{ minWidth: 230, bgcolor: 'background.paper', borderRadius: 1.5 }}>
-              <InputLabel id="dept-eval-period-label">Kỳ đánh giá</InputLabel>
-              <Select
-                labelId="dept-eval-period-label"
-                value={selectedPeriod}
-                label="Kỳ đánh giá"
-                onChange={(e) => setSelectedPeriod(e.target.value)}
-              >
-                {PERIOD_OPTIONS.map((opt) => (
-                  <MenuItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            {/* Dropdown Kỳ đánh giá (Ma trận Lịch) */}
+            <PeriodMatrixPicker
+              label="Kỳ đánh giá"
+              value={selectedPeriod}
+              onChange={(newVal) => setSelectedPeriod(newVal)}
+            />
           </Stack>
         </CardContent>
       </Card>
@@ -684,7 +723,17 @@ export default function DepartmentEvaluationView() {
                             </Button>
                           </Stack>
                         ) : row.isApproved ? (
-                          <Chip icon={<CheckCircleRoundedIcon sx={{ fontSize: 14 }} />} label="Đã phê duyệt" color="success" size="small" variant="outlined" />
+                          <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+                            <Chip icon={<CheckCircleRoundedIcon sx={{ fontSize: 14 }} />} label="Đã phê duyệt" color="success" size="small" variant="outlined" />
+                            <Button size="small" variant="outlined" onClick={() => handleOpenEvalModal(row)} sx={{ textTransform: 'none', fontSize: '0.75rem' }}>Chi tiết</Button>
+                          </Stack>
+                        ) : row.isRejected ? (
+                          <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+                            <Tooltip title={`Lý do từ chối: "${row.evalRecord?.rejectReason || 'Yêu cầu rà soát lại'}"`}>
+                              <Chip icon={<CancelRoundedIcon sx={{ fontSize: 14 }} />} label="Đã từ chối" color="error" size="small" variant="outlined" sx={{ fontWeight: 600 }} />
+                            </Tooltip>
+                            <Button size="small" variant="outlined" color="warning" onClick={() => handleOpenEvalModal(row)} sx={{ textTransform: 'none', fontSize: '0.75rem' }}>Xem lại</Button>
+                          </Stack>
                         ) : !row.hasSubmittedSelfEval ? (
                           <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
                             <Chip
@@ -704,15 +753,24 @@ export default function DepartmentEvaluationView() {
                             </Button>
                           </Stack>
                         ) : (
-                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Stack direction="row" spacing={0.8} justifyContent="flex-end">
                             <Button
                               size="small"
                               variant="contained"
-                              color="primary"
+                              color="success"
                               onClick={() => handleApproveStaff(row)}
-                              sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem' }}
+                              sx={{ textTransform: 'none', fontWeight: 700, fontSize: '0.75rem' }}
                             >
                               Phê duyệt
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              onClick={() => setRejectModal({ open: true, row, reason: '' })}
+                              sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem' }}
+                            >
+                              Từ chối
                             </Button>
                             <Button
                               size="small"
@@ -777,7 +835,7 @@ export default function DepartmentEvaluationView() {
             placeholder={!evalModal.hasSubmittedSelfEval ? "Chờ cấp dưới nộp bản tự đánh giá..." : "Nêu rõ ưu điểm, tinh thần trách nhiệm..."}
           />
         </DialogContent>
-        <DialogActions sx={{ p: 2 }}>
+        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
           <Button onClick={() => setEvalModal({ ...evalModal, open: false })} color="inherit" sx={{ textTransform: 'none' }}>
             {isQ4 || !evalModal.hasSubmittedSelfEval ? 'Đóng' : 'Hủy bỏ'}
           </Button>
@@ -795,10 +853,64 @@ export default function DepartmentEvaluationView() {
               Chuyển sang Cả Năm để phê duyệt
             </Button>
           ) : evalModal.hasSubmittedSelfEval && !evalModal.isApproved ? (
-            <Button onClick={handleSaveModal} variant="contained" color="primary" sx={{ textTransform: 'none', fontWeight: 600, color: '#fff' }}>
-              Phê duyệt & Lưu kết quả
-            </Button>
+            <Stack direction="row" spacing={1}>
+              <Button
+                onClick={() => {
+                  const targetRow = rows.find((r) => r.id === evalModal.staff?.id);
+                  setEvalModal((prev) => ({ ...prev, open: false }));
+                  setRejectModal({ open: true, row: targetRow, reason: '' });
+                }}
+                variant="outlined"
+                color="error"
+                sx={{ textTransform: 'none', fontWeight: 600 }}
+              >
+                Từ chối / Yêu cầu nộp lại
+              </Button>
+              <Button onClick={handleSaveModal} variant="contained" color="success" sx={{ textTransform: 'none', fontWeight: 700, color: '#fff' }}>
+                Phê duyệt & Lưu kết quả
+              </Button>
+            </Stack>
           ) : null}
+        </DialogActions>
+      </Dialog>
+
+      {/* Reject & Request Re-evaluation Modal */}
+      <Dialog
+        open={rejectModal.open}
+        onClose={() => setRejectModal({ open: false, row: null, reason: '' })}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <CancelRoundedIcon /> Từ chối bản tự đánh giá
+        </DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb: 2 }}>
+            Bạn đang yêu cầu cán bộ <strong>{rejectModal.row?.name}</strong> nộp lại bản đánh giá KPI kỳ <strong>{selectedPeriodLabel}</strong>.
+          </Typography>
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            label="Lý do từ chối / Góp ý hoàn thiện (Bắt buộc)"
+            placeholder="Ví dụ: Chỉ tiêu thực tế chưa đúng minh chứng, đề nghị rà soát lại tiến độ hoặc chấm lại phẩm chất..."
+            value={rejectModal.reason}
+            onChange={(e) => setRejectModal((prev) => ({ ...prev, reason: e.target.value }))}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setRejectModal({ open: false, row: null, reason: '' })} color="inherit" sx={{ textTransform: 'none' }}>
+            Hủy bỏ
+          </Button>
+          <Button
+            onClick={() => handleRejectStaff(rejectModal.row, rejectModal.reason)}
+            variant="contained"
+            color="error"
+            disabled={!rejectModal.reason.trim()}
+            sx={{ textTransform: 'none', fontWeight: 700 }}
+          >
+            Xác nhận từ chối
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

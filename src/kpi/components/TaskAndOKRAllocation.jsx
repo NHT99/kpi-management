@@ -7,6 +7,7 @@ import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
 import Autocomplete from '@mui/material/Autocomplete';
 import MenuItem from '@mui/material/MenuItem';
+import ListSubheader from '@mui/material/ListSubheader';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -37,7 +38,9 @@ import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
 import FlagRoundedIcon from '@mui/icons-material/FlagRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import PendingActionsRoundedIcon from '@mui/icons-material/PendingActionsRounded';
+import CancelRoundedIcon from '@mui/icons-material/CancelRounded';
 import LockRoundedIcon from '@mui/icons-material/LockRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useAuth } from '../../rbac/AuthContext';
@@ -47,17 +50,30 @@ import { useToast } from '../hooks/useToast';
 import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
 import { MOCK_USERS, getAllUsers } from '../../rbac/users';
 import { logAction } from '../utils/auditLogger';
+import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 import {
   getCurrentQuarterInfo,
+  getCurrentMonthInfo,
   getActiveAndRemainingQuarters,
+  getFullYearQuarterOptions,
   toRomanQuarter,
   isQuarterInPast,
   getEffectiveOKRStats,
   normalizePeriodAndQuarter,
+  isTaskInPeriod,
+  isOKRInPeriod,
+  getTaskPeriodDisplay,
 } from '../utils/quarterHelper';
 
-const currentQuarterInfo = getCurrentQuarterInfo();
-const ACTIVE_QUARTER_OPTIONS = getActiveAndRemainingQuarters();
+const {
+  currentInfo: currentQuarterInfo,
+  currentMonthInfo,
+  months,
+  quarters,
+  yearOption,
+  evaluationOptions: PERIOD_OPTIONS,
+  groupedOptions,
+} = getFullYearQuarterOptions();
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export default function TaskAndOKRAllocation() {
@@ -65,19 +81,25 @@ export default function TaskAndOKRAllocation() {
   const isBanLeader = role === ROLES.BAN_LEADER;
   const isDeptHead = role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER;
 
-  const [selectedQuarter, setSelectedQuarter] = useState(currentQuarterInfo.display);
+  const [selectedQuarter, setSelectedQuarter] = useState(currentQuarterInfo.periodKey);
+  const selectedQuarterNorm = normalizePeriodAndQuarter(selectedQuarter);
+  const selectedQuarterDisplay = selectedQuarterNorm.display;
   const [okrs, setOkrs] = useLocalStorage('kpi_okr_list', INITIAL_OKRS);
   const [tasks, setTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
   const [masterKPIs] = useLocalStorage('kpi_master_catalog', INITIAL_MASTER_KPIS);
   const [storedStaffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
 
-  // Đồng bộ phiên bản init data (đảm bảo chuẩn 8 OKRs, 18 nhiệm vụ, không gán cho Super Admin / HR Admin)
+  // Đồng bộ phiên bản init data nhưng bảo toàn các nhiệm vụ do người dùng tự tạo
   useEffect(() => {
     const savedVer = localStorage.getItem('kpi_data_version');
     if (savedVer !== KPI_DATA_VERSION) {
       setOkrs(INITIAL_OKRS);
-      setTasks(INITIAL_ASSIGNED_TASKS);
+      setTasks((prev) => {
+        const initialIds = new Set(INITIAL_ASSIGNED_TASKS.map((t) => t.id));
+        const custom = Array.isArray(prev) ? prev.filter((t) => !initialIds.has(t.id)) : [];
+        return [...custom, ...INITIAL_ASSIGNED_TASKS];
+      });
       localStorage.setItem('kpi_data_version', KPI_DATA_VERSION);
     }
   }, [setOkrs, setTasks]);
@@ -416,6 +438,23 @@ export default function TaskAndOKRAllocation() {
     showToast('Đã phê duyệt nhiệm vụ / KPI cá nhân thành công!', 'success');
   };
 
+  const handleRejectTask = (taskId) => {
+    setTasks(
+      tasks.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              approvalStatus: 'Từ chối',
+              status: 'Đã từ chối',
+              approverName: currentUser.name + (isBanLeader ? ' (Lãnh đạo Ban)' : ' (Trưởng phòng)'),
+            }
+          : t
+      )
+    );
+    logAction('Từ chối nhiệm vụ', currentUser, `Từ chối nhiệm vụ ID ${taskId} của cấp dưới.`, 'Quản lý OKR & Giao việc');
+    showToast('Đã từ chối nhiệm vụ / đề xuất thành công!', 'info');
+  };
+
   // Check OKR edit/delete permission:
   const canEditOrDeleteOkr = (okr) => {
     // Nếu OKR thuộc kỳ đã kết thúc -> Khóa không cho phép sửa hoặc xóa
@@ -433,10 +472,14 @@ export default function TaskAndOKRAllocation() {
     }
     setOkrEdit(false);
     setCurrentOkrId(null);
+    const norm = normalizePeriodAndQuarter(selectedQuarter);
+    const chosenQuarter = (norm.isQuarter && !norm.isPast) ? norm.quarterDisplay : currentQuarterInfo.display;
+    const chosenPeriod = (norm.isQuarter && !norm.isPast) ? norm.periodKey : currentQuarterInfo.periodKey;
     setOkrFormData({
       code: `OKR_0${okrs.length + 1}`,
       title: '',
-      quarter: selectedQuarter.startsWith('Năm') ? currentQuarterInfo.display : (selectedQuarter || currentQuarterInfo.display),
+      quarter: chosenQuarter,
+      period: chosenPeriod,
       owner: currentUser?.name || 'Tài khoản hiện tại',
       progress: 0,
       status: 'Đang thực hiện',
@@ -542,8 +585,8 @@ export default function TaskAndOKRAllocation() {
     const defaultFactor = Number(defaultMaster.conversionFactor ?? defaultMaster.multiplier ?? 1.0);
     const chosenOkrId = (typeof targetOkrId === 'string' && targetOkrId) ? targetOkrId : (okrs[0]?.id || '');
     const norm = normalizePeriodAndQuarter(selectedQuarter);
-    const chosenQuarter = norm.isYear ? currentQuarterInfo.display : norm.quarterDisplay;
-    const chosenPeriod = norm.isYear ? currentQuarterInfo.periodKey : norm.periodKey;
+    const chosenQuarter = (norm.isMonth && !norm.isPast) ? norm.quarterDisplay : currentMonthInfo.display;
+    const chosenPeriod = (norm.isMonth && !norm.isPast) ? norm.periodKey : currentMonthInfo.periodKey;
 
     setTaskFormData({
       taskName: defaultMaster.title,
@@ -701,6 +744,8 @@ export default function TaskAndOKRAllocation() {
             ? {
               ...t,
               ...taskFormData,
+              quarter: normalizePeriodAndQuarter(taskFormData.quarter || t.quarter).quarterDisplay,
+              period: normalizePeriodAndQuarter(taskFormData.quarter || t.period).periodKey,
               status: taskStatus,
               isBonus: isBonus,
               targetQty: Number(taskFormData.targetQty),
@@ -799,12 +844,7 @@ export default function TaskAndOKRAllocation() {
       }
     }
 
-    const normSelected = normalizePeriodAndQuarter(selectedQuarter);
-    const matchQuarter = (() => {
-      if (normSelected.isYear) return true;
-      const okrNorm = normalizePeriodAndQuarter(o.quarter);
-      return okrNorm.periodKey === normSelected.periodKey;
-    })();
+    const matchQuarter = isOKRInPeriod(o, selectedQuarter);
     const matchSearch =
       o.code.toLowerCase().includes(okrSearch.toLowerCase()) ||
       o.title.toLowerCase().includes(okrSearch.toLowerCase()) ||
@@ -816,13 +856,8 @@ export default function TaskAndOKRAllocation() {
 
   // Filtering Tasks by Department, Quarter, Search and OKR
   const filteredTasks = [...tasks].sort(sortByNewest).filter((t) => {
-    // 1. Khớp theo kỳ đánh giá (Quý I, II, III, IV hoặc Cả năm)
-    const normSelected = normalizePeriodAndQuarter(selectedQuarter);
-    const matchQuarter = (() => {
-      if (normSelected.isYear) return true;
-      const taskNorm = normalizePeriodAndQuarter(t.period || t.quarter || t.deadline);
-      return taskNorm.periodKey === normSelected.periodKey;
-    })();
+    // 1. Khớp theo kỳ đánh giá (Tháng, Quý, Năm theo phân cấp)
+    const matchQuarter = isTaskInPeriod(t, selectedQuarter);
 
     const matchSearch =
       t.taskName.toLowerCase().includes(taskSearch.toLowerCase()) ||
@@ -890,20 +925,11 @@ export default function TaskAndOKRAllocation() {
             Quản lý OKR Chiến lược & Giao nhiệm vụ định kỳ cho Cấp dưới
           </Typography>
 
-          <TextField
-            select
-            label="Chọn kỳ đánh giá"
+          <PeriodMatrixPicker
+            label="Kỳ đánh giá"
             value={selectedQuarter}
-            onChange={(e) => setSelectedQuarter(e.target.value)}
-            size="small"
-            sx={{ minWidth: 200 }}
-          >
-            {ACTIVE_QUARTER_OPTIONS.map((opt) => (
-              <MenuItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </MenuItem>
-            ))}
-          </TextField>
+            onChange={(newVal) => setSelectedQuarter(newVal)}
+          />
         </Stack>
       </Card>
 
@@ -912,7 +938,7 @@ export default function TaskAndOKRAllocation() {
         <Box sx={{ p: 2.5, bgcolor: 'action.hover', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Mục tiêu Trọng tâm Chiến lược (OKRs) - {selectedQuarter}
+              Mục tiêu Trọng tâm Chiến lược (OKRs) - {selectedQuarterDisplay}
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Lãnh đạo Ban và Trưởng phòng thiết lập các mục tiêu trọng tâm để phân bổ nhiệm vụ xuống cấp dưới
@@ -1368,7 +1394,7 @@ export default function TaskAndOKRAllocation() {
         <Box sx={{ p: 2.5, bgcolor: 'action.hover', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Bảng Giao nhiệm vụ & Phân bổ KPI cho Cấp dưới - {selectedQuarter} ({filteredTasks.length} nhiệm vụ)
+              Bảng Giao nhiệm vụ & Phân bổ KPI cho Cấp dưới - {selectedQuarterDisplay} ({filteredTasks.length} nhiệm vụ)
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Giao việc trực tiếp theo phân cấp quản lý (Lãnh đạo Ban giao Trưởng phòng; Trưởng phòng giao Chuyên viên)
@@ -1504,12 +1530,29 @@ export default function TaskAndOKRAllocation() {
                         <Typography variant="body2" sx={{ fontWeight: 700 }}>
                           {t.taskName}
                         </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          Sản phẩm: {t.outputProduct} • ĐVT: {t.unit}
-                        </Typography>
-                        {t.isBonus && (
-                          <Chip label="Vượt mức (+Bonus)" size="small" color="error" sx={{ ml: 1, height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
-                        )}
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Sản phẩm: {t.outputProduct} • ĐVT: {t.unit}
+                          </Typography>
+                          <Chip
+                            label={`Kỳ: ${getTaskPeriodDisplay(t)}`}
+                            size="small"
+                            variant="outlined"
+                            color="info"
+                            sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }}
+                          />
+                          {t.deadline && (
+                            <Chip
+                              label={`Hạn: ${t.deadline}`}
+                              size="small"
+                              variant="outlined"
+                              sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
+                            />
+                          )}
+                          {t.isBonus && (
+                            <Chip label="Vượt mức (+Bonus)" size="small" color="error" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
+                          )}
+                        </Stack>
                       </TableCell>
                       <TableCell>
                         {(() => {
@@ -1555,16 +1598,25 @@ export default function TaskAndOKRAllocation() {
                         })()}
                       </TableCell>
                       <TableCell>
-                        <Box sx={{ width: 140 }}>
-                          <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                            <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        <Box sx={{ minWidth: 165, maxWidth: 190 }}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
+                            <Typography variant="caption" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
                               {currentVal} / {targetVal} {t.unit}
                             </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {pct}%
-                            </Typography>
+                            <Chip
+                              label={`${pct}%`}
+                              size="small"
+                              variant="filled"
+                              color={pct >= 100 ? 'success' : pct > 0 ? 'primary' : 'default'}
+                              sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700, px: 0.5 }}
+                            />
                           </Stack>
-                          <LinearProgress variant="determinate" value={pct} sx={{ height: 6, borderRadius: 3 }} />
+                          <LinearProgress
+                            variant="determinate"
+                            value={pct}
+                            color={pct >= 100 ? 'success' : 'primary'}
+                            sx={{ height: 6, borderRadius: 3 }}
+                          />
                         </Box>
                       </TableCell>
                       <TableCell>
@@ -1577,26 +1629,50 @@ export default function TaskAndOKRAllocation() {
                             variant="outlined"
                             sx={{ fontWeight: 600 }}
                           />
-                        ) : canApproveTask(t) ? (
-                          <Button
+                        ) : t.approvalStatus === 'Từ chối' ? (
+                          <Chip
+                            icon={<CancelRoundedIcon sx={{ fontSize: 14 }} />}
+                            label="Đã từ chối"
                             size="small"
-                            variant="contained"
-                            color="warning"
-                            onClick={() => handleApproveTask(t.id)}
-                            sx={{
-                              textTransform: 'none',
-                              fontSize: '0.75rem',
-                              py: 0.3,
-                              px: 1.2,
-                              fontWeight: 700,
-                              borderRadius: 1.5,
-                              bgcolor: '#f59e0b',
-                              '&:hover': { bgcolor: '#d97706' },
-                              color: '#fff',
-                            }}
-                          >
-                            Phê duyệt ngay
-                          </Button>
+                            color="error"
+                            variant="outlined"
+                            sx={{ fontWeight: 600 }}
+                          />
+                        ) : canApproveTask(t) ? (
+                          <Stack direction="row" spacing={0.5}>
+                            <Button
+                              size="small"
+                              variant="contained"
+                              color="success"
+                              onClick={() => handleApproveTask(t.id)}
+                              sx={{
+                                textTransform: 'none',
+                                fontSize: '0.75rem',
+                                py: 0.3,
+                                px: 1,
+                                fontWeight: 700,
+                                borderRadius: 1.5,
+                              }}
+                            >
+                              Duyệt
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              onClick={() => handleRejectTask(t.id)}
+                              sx={{
+                                textTransform: 'none',
+                                fontSize: '0.75rem',
+                                py: 0.3,
+                                px: 1,
+                                fontWeight: 700,
+                                borderRadius: 1.5,
+                              }}
+                            >
+                              Từ chối
+                            </Button>
+                          </Stack>
                         ) : (
                           <Chip
                             icon={<PendingActionsRoundedIcon sx={{ fontSize: 14, color: '#b45309' }} />}
@@ -1738,17 +1814,61 @@ export default function TaskAndOKRAllocation() {
           <TextField
             select
             fullWidth
-            label="Kỳ áp dụng"
+            label="Kỳ áp dụng (Chiến lược theo Quý / Năm)"
             InputLabelProps={{ shrink: true }}
-            value={okrFormData.quarter}
-            onChange={(e) => setOkrFormData({ ...okrFormData, quarter: e.target.value })}
+            value={
+              (() => {
+                const norm = normalizePeriodAndQuarter(okrFormData.period || okrFormData.quarter || selectedQuarter);
+                if (norm.isMonth || norm.isPast) return currentQuarterInfo.periodKey;
+                return norm.periodKey;
+              })()
+            }
+            onChange={(e) => {
+              const n = normalizePeriodAndQuarter(e.target.value);
+              setOkrFormData({ ...okrFormData, quarter: n.quarterDisplay, period: n.periodKey });
+            }}
             sx={{ mb: 2 }}
+            SelectProps={{
+              IconComponent: KeyboardArrowDownRoundedIcon,
+              MenuProps: { PaperProps: { sx: { maxHeight: 380 } } },
+            }}
           >
-            {ACTIVE_QUARTER_OPTIONS.map((opt) => (
-              <MenuItem key={opt.value} value={opt.value}>
-                {opt.label}
+            <ListSubheader
+              sx={{
+                fontWeight: 800,
+                bgcolor: 'action.hover',
+                color: 'primary.main',
+                lineHeight: '32px',
+              }}
+            >
+              Chu kỳ Quý (Mục tiêu Chiến lược OKR)
+            </ListSubheader>
+            {quarters.map((opt) => (
+              <MenuItem
+                key={opt.value}
+                value={opt.value}
+                disabled={opt.isPast}
+                sx={{
+                  pl: 3,
+                  ...(opt.isPast && { color: 'text.disabled' }),
+                }}
+              >
+                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
               </MenuItem>
             ))}
+            <ListSubheader
+              sx={{
+                fontWeight: 800,
+                bgcolor: 'action.hover',
+                color: 'primary.main',
+                lineHeight: '32px',
+              }}
+            >
+              Chu kỳ Năm
+            </ListSubheader>
+            <MenuItem key={yearOption.value} value={yearOption.value} sx={{ pl: 3 }}>
+              {yearOption.label}
+            </MenuItem>
           </TextField>
           <TextField
             fullWidth
@@ -2055,6 +2175,58 @@ export default function TaskAndOKRAllocation() {
               onChange={(e) => setTaskFormData({ ...taskFormData, deadline: e.target.value })}
             />
           </Stack>
+
+          <TextField
+            select
+            fullWidth
+            label="Chu kỳ Tháng giao nhiệm vụ"
+            InputLabelProps={{ shrink: true }}
+            value={
+              (() => {
+                const norm = normalizePeriodAndQuarter(taskFormData.period || taskFormData.quarter || selectedQuarter);
+                if (!norm.isMonth || norm.isPast) return currentMonthInfo.periodKey;
+                return norm.periodKey;
+              })()
+            }
+            onChange={(e) => {
+              const val = e.target.value;
+              const n = normalizePeriodAndQuarter(val);
+              setTaskFormData({
+                ...taskFormData,
+                quarter: n.quarterDisplay,
+                period: n.periodKey,
+              });
+            }}
+            sx={{ mb: 2 }}
+            SelectProps={{
+              IconComponent: KeyboardArrowDownRoundedIcon,
+              MenuProps: { PaperProps: { sx: { maxHeight: 380 } } },
+            }}
+          >
+            <ListSubheader
+              sx={{
+                fontWeight: 800,
+                bgcolor: 'action.hover',
+                color: 'primary.main',
+                lineHeight: '32px',
+              }}
+            >
+              Chu kỳ Tháng (Giao việc định kỳ theo tháng)
+            </ListSubheader>
+            {months.map((opt) => (
+              <MenuItem
+                key={opt.value}
+                value={opt.value}
+                disabled={opt.isPast}
+                sx={{
+                  pl: 3,
+                  ...(opt.isPast && { color: 'text.disabled' }),
+                }}
+              >
+                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
+              </MenuItem>
+            ))}
+          </TextField>
 
           {taskEdit ? (
             <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
