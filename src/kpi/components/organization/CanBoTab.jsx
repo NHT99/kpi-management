@@ -529,8 +529,8 @@ const getStaffExtendedProfile = (staff, deptObj, vtvlObj) => {
     const child1Age = 2026 - child1BirthYear;
     const child1Gender = rng.bool(50) ? 'Nam' : 'Nữ';
     const child1Name = `${staffSurname} ${child1Gender === 'Nam'
-        ? rng.pick(['Minh Khang', 'Tuấn Kiệt', 'Gia Bảo', 'Đăng Khoa', 'Quốc Bảo'])
-        : rng.pick(['Bảo Ngọc', 'Phương Linh', 'Thảo My', 'Tuệ Nhi', 'Hà My'])
+      ? rng.pick(['Minh Khang', 'Tuấn Kiệt', 'Gia Bảo', 'Đăng Khoa', 'Quốc Bảo'])
+      : rng.pick(['Bảo Ngọc', 'Phương Linh', 'Thảo My', 'Tuệ Nhi', 'Hà My'])
       }`;
     const child1Job =
       child1Age > 18
@@ -555,8 +555,8 @@ const getStaffExtendedProfile = (staff, deptObj, vtvlObj) => {
       const child2Age = 2026 - child2BirthYear;
       const child2Gender = rng.bool(50) ? 'Nam' : 'Nữ';
       const child2Name = `${staffSurname} ${child2Gender === 'Nam'
-          ? rng.pick(['Gia Huy', 'Nhật Minh', 'Đức Anh', 'Hải Đăng'])
-          : rng.pick(['Mai Chi', 'Khánh An', 'Thùy Chi', 'Nhã Uyên'])
+        ? rng.pick(['Gia Huy', 'Nhật Minh', 'Đức Anh', 'Hải Đăng'])
+        : rng.pick(['Mai Chi', 'Khánh An', 'Thùy Chi', 'Nhã Uyên'])
         }`;
       const child2Job =
         child2Age > 10
@@ -1488,11 +1488,6 @@ export default function CanBoTab() {
             />
           </Stack>
 
-          <Alert severity="info" variant="outlined" sx={{ borderRadius: 1.5 }}>
-            <Typography variant="caption" sx={{ display: 'block', lineHeight: 1.4 }}>
-              <strong>Phân định quyền hạn:</strong> Cán bộ mới thêm sẽ mặc định có trạng thái <strong>Chờ cấp tài khoản (NO_ACCOUNT)</strong>. Việc tạo tên đăng nhập (Username), mật khẩu khởi tạo và phân quyền RBAC sẽ do <strong>Super Admin</strong> thực hiện tại màn hình <em>Quản lý Tài khoản</em>.
-            </Typography>
-          </Alert>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setFormDialog({ open: false, isEdit: false, item: null })} color="inherit" sx={{ textTransform: 'none' }}>

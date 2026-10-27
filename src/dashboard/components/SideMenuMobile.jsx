@@ -12,9 +12,11 @@ import NotificationsRoundedIcon from '@mui/icons-material/NotificationsRounded';
 import MenuButton from './MenuButton';
 import MenuContent from './MenuContent';
 import { useAuth } from '../../rbac/AuthContext';
+import { useNavigation } from '../../kpi/NavigationContext';
 
 function SideMenuMobile({ open, toggleDrawer }) {
-  const { currentUser, roleDetails } = useAuth();
+  const { currentUser, roleDetails, logout } = useAuth();
+  const { goToHome } = useNavigation();
 
   return (
     <Drawer
@@ -71,7 +73,16 @@ function SideMenuMobile({ open, toggleDrawer }) {
           <Divider />
         </Stack>
         <Stack sx={{ p: 2 }}>
-          <Button variant="outlined" fullWidth startIcon={<LogoutRoundedIcon />}>
+          <Button
+            variant="outlined"
+            fullWidth
+            startIcon={<LogoutRoundedIcon />}
+            onClick={() => {
+              toggleDrawer(false)();
+              goToHome();
+              logout();
+            }}
+          >
             Đăng xuất
           </Button>
         </Stack>

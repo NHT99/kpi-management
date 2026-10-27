@@ -169,6 +169,7 @@ export default function DepartmentEvaluationView() {
   }, [allAvailableStaffs, role, currentUser, departments]);
 
   const isYearPeriod = selectedPeriod.startsWith('YEAR_') || selectedPeriod.includes('Năm');
+  const isMonthPeriod = Boolean(selectedPeriod.startsWith('M') || normalizePeriodAndQuarter(selectedPeriod).isMonth);
   const isQ4 = !isQuarterEligibleForSeparateDecision(selectedPeriod);
 
   // Compute evaluation rows
@@ -234,11 +235,13 @@ export default function DepartmentEvaluationView() {
       // Lấy kết quả các quý và kiểm tra khống chế loại Cả Năm
       const quarterlyResults = getStaffQuarterlyEvaluations(evaluations, staff.id, staff.name, currentQuarterInfo.year);
       const capInfo = isYearPeriod ? checkYearlyGradeCap(quarterlyResults) : { isCapped: false, reason: '' };
-      const grade = totalScore !== null
-        ? (isYearPeriod ? determineYearlyGrade(totalScore, quarterlyResults) : determineGrade(totalScore))
-        : isRejected
-          ? 'Bị từ chối'
-          : 'Chờ tự đánh giá';
+      const grade = isMonthPeriod
+        ? '—'
+        : (totalScore !== null
+          ? (isYearPeriod ? determineYearlyGrade(totalScore, quarterlyResults) : determineGrade(totalScore))
+          : isRejected
+            ? 'Bị từ chối'
+            : 'Chờ tự đánh giá');
 
       return {
         id: staff.id,
@@ -457,6 +460,29 @@ export default function DepartmentEvaluationView() {
         </CardContent>
       </Card>
 
+      {/* Thông báo quy định nghiệp vụ Chu kỳ Tháng (Hướng dẫn 05-HD/TU) */}
+      {isMonthPeriod && (
+        <Alert
+          severity="info"
+          variant="outlined"
+          icon={<InfoOutlinedIcon />}
+          sx={{
+            mb: 3,
+            borderRadius: 2,
+            bgcolor: (theme) =>
+              theme.palette.mode === 'dark' ? 'rgba(2, 136, 209, 0.08)' : '#e1f5fe',
+            borderColor: 'info.main',
+          }}
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+            Quy định nghiệp vụ (Hướng dẫn 05-HD/TU):
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            Chu kỳ Tháng phục vụ theo dõi tiến độ nhiệm vụ và điểm số công việc thực tế của cán bộ để tích lũy cho Quý. <strong>Không xếp loại chất lượng và không thực hiện quy trình phê duyệt đánh giá cho chu kỳ Tháng</strong>.
+          </Typography>
+        </Alert>
+      )}
+
       {/* Thông báo quy định nghiệp vụ Quý IV (Hướng dẫn 05-HD/TU) */}
       {isQ4 && (
         <Alert
@@ -514,12 +540,14 @@ export default function DepartmentEvaluationView() {
         <Card variant="outlined" sx={{ borderRadius: 2, overflow: 'hidden' }}>
           <Box sx={{ p: 2.5, bgcolor: 'action.hover', borderBottom: '1px solid', borderColor: 'divider' }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              Bảng {isQ4 ? 'Theo dõi Tiến độ & Tích lũy Kết quả' : 'Chấm điểm & Phê duyệt Kết quả'} {selectedPeriodLabel}
+              Bảng {isMonthPeriod ? 'Theo dõi Tiến độ & Điểm số Tháng' : isQ4 ? 'Theo dõi Tiến độ & Tích lũy Kết quả' : 'Chấm điểm & Phê duyệt Kết quả'} {selectedPeriodLabel}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {isQ4
-                ? 'Theo Hướng dẫn 05-HD/TU: Số liệu Quý IV tích lũy trực tiếp vào đợt Tổng kết Cả Năm. Không ban hành Quyết định phê duyệt Quý IV riêng biệt.'
-                : 'Cột 1: Họ tên | Cột 2: Điểm KPI Tự động (70đ) | Cột 3: Tự chấm Phẩm chất (30đ) | Cột 4: Tổng điểm Tự chấm (100đ) | Cột 5: Sếp chấm Phẩm chất | Cột 6: Tổng điểm thẩm định & Xếp loại'}
+              {isMonthPeriod
+                ? 'Theo Hướng dẫn 05-HD/TU: Tháng chỉ ghi nhận sản phẩm và điểm KPI công việc thực tế (tối đa 70đ) để tích lũy cho Quý. Không xếp loại và không duyệt đánh giá tháng.'
+                : isQ4
+                  ? 'Theo Hướng dẫn 05-HD/TU: Số liệu Quý IV tích lũy trực tiếp vào đợt Tổng kết Cả Năm. Không ban hành Quyết định phê duyệt Quý IV riêng biệt.'
+                  : 'Cột 1: Họ tên | Cột 2: Điểm KPI Tự động (70đ) | Cột 3: Tự chấm Phẩm chất (30đ) | Cột 4: Tổng điểm Tự chấm (100đ) | Cột 5: Sếp chấm Phẩm chất | Cột 6: Tổng điểm thẩm định & Xếp loại'}
             </Typography>
           </Box>
 
@@ -533,7 +561,7 @@ export default function DepartmentEvaluationView() {
                   <TableCell sx={{ fontWeight: 700 }}>Tổng điểm Cấp dưới Tự chấm</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Điểm Phẩm chất Sếp chấm (Input 0-30đ)</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Tổng điểm & Xếp loại</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>{isQ4 ? 'Thao tác' : 'Phê duyệt / Chốt'}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>{isMonthPeriod ? 'Theo dõi' : isQ4 ? 'Thao tác' : 'Phê duyệt / Chốt'}</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -587,7 +615,16 @@ export default function DepartmentEvaluationView() {
                       {/* Cột: Tổng điểm Cấp dưới Tự chấm */}
                       <TableCell>
                         <Box>
-                          {row.hasSubmittedSelfEval && row.selfEthicsScore !== null ? (
+                          {isMonthPeriod ? (
+                            <>
+                              <Typography variant="body2" sx={{ fontWeight: 800, color: 'text.primary' }}>
+                                {row.autoKPIScore.toFixed(1)} / 70đ
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.72rem' }}>
+                                (Điểm việc Tháng)
+                              </Typography>
+                            </>
+                          ) : row.hasSubmittedSelfEval && row.selfEthicsScore !== null ? (
                             <>
                               <Typography variant="body2" sx={{ fontWeight: 800, color: 'text.primary' }}>
                                 {(row.autoKPIScore + row.selfEthicsScore).toFixed(1)} / 100đ
@@ -609,40 +646,58 @@ export default function DepartmentEvaluationView() {
                         </Box>
                       </TableCell>
                       <TableCell>
-                        <Tooltip
-                          title={
-                            isQ4
-                              ? 'Quý IV tích lũy vào Cả Năm'
-                              : row.isApproved
-                                ? 'Đã phê duyệt kết quả'
-                                : !row.hasSubmittedSelfEval
-                                  ? 'Cán bộ chưa gửi đánh giá (Sếp sẽ chấm sau khi cấp dưới nộp)'
-                                  : 'Nhập điểm phẩm chất thẩm định (0 - 30đ)'
-                          }
-                          arrow
-                        >
-                          <span>
-                            <TextField
-                              size="small"
-                              type="number"
-                              disabled={isQ4 || row.isApproved || !row.hasSubmittedSelfEval}
-                              value={row.bossEthicsScore !== null && row.bossEthicsScore !== undefined ? row.bossEthicsScore : ''}
-                              onChange={(e) => handleBossEthicsChange(row.id, e.target.value)}
-                              placeholder={!row.hasSubmittedSelfEval ? '--' : '0-30'}
-                              inputProps={{ min: 0, max: 30, step: 0.5, style: { textAlign: 'center' } }}
-                              sx={{
-                                width: 90,
-                                '& .MuiOutlinedInput-root': {
-                                  bgcolor: !row.hasSubmittedSelfEval ? 'action.hover' : 'background.paper',
-                                },
-                              }}
-                            />
-                          </span>
-                        </Tooltip>
+                        {isMonthPeriod ? (
+                          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                            Tích lũy Quý
+                          </Typography>
+                        ) : (
+                          <Tooltip
+                            title={
+                              isQ4
+                                ? 'Quý IV tích lũy vào Cả Năm'
+                                : row.isApproved
+                                  ? 'Đã phê duyệt kết quả'
+                                  : !row.hasSubmittedSelfEval
+                                    ? 'Cán bộ chưa gửi đánh giá (Sếp sẽ chấm sau khi cấp dưới nộp)'
+                                    : 'Nhập điểm phẩm chất thẩm định (0 - 30đ)'
+                            }
+                            arrow
+                          >
+                            <span>
+                              <TextField
+                                size="small"
+                                type="number"
+                                disabled={isQ4 || row.isApproved || !row.hasSubmittedSelfEval}
+                                value={row.bossEthicsScore !== null && row.bossEthicsScore !== undefined ? row.bossEthicsScore : ''}
+                                onChange={(e) => handleBossEthicsChange(row.id, e.target.value)}
+                                placeholder={!row.hasSubmittedSelfEval ? '--' : '0-30'}
+                                inputProps={{ min: 0, max: 30, step: 0.5, style: { textAlign: 'center' } }}
+                                sx={{
+                                  width: 90,
+                                  '& .MuiOutlinedInput-root': {
+                                    bgcolor: !row.hasSubmittedSelfEval ? 'action.hover' : 'background.paper',
+                                  },
+                                }}
+                              />
+                            </span>
+                          </Tooltip>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Box>
-                          {row.hasSubmittedSelfEval && row.totalScore !== null ? (
+                          {isMonthPeriod ? (
+                            <>
+                              <Typography variant="body2" sx={{ fontWeight: 800, color: 'primary.main' }}>
+                                {row.autoKPIScore.toFixed(1)} / 70 đ
+                              </Typography>
+                              <Chip
+                                label="Tích lũy Quý"
+                                size="small"
+                                variant="outlined"
+                                sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700, mt: 0.5, color: 'text.secondary', borderColor: '#cbd5e1' }}
+                              />
+                            </>
+                          ) : row.hasSubmittedSelfEval && row.totalScore !== null ? (
                             <>
                               <Typography variant="body2" sx={{ fontWeight: 800, color: 'primary.main' }}>
                                 {row.totalScore.toFixed(1)} / 100 đ
@@ -694,7 +749,25 @@ export default function DepartmentEvaluationView() {
                         </Box>
                       </TableCell>
                       <TableCell align="right">
-                        {isQ4 ? (
+                        {isMonthPeriod ? (
+                          <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+                            <Chip
+                              label="Theo dõi tiến độ"
+                              size="small"
+                              variant="outlined"
+                              color="info"
+                              sx={{ fontSize: '0.75rem', fontWeight: 600, height: 26 }}
+                            />
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => handleOpenEvalModal(row)}
+                              sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                            >
+                              Xem việc
+                            </Button>
+                          </Stack>
+                        ) : isQ4 ? (
                           <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
                             <Tooltip
                               title="Theo Hướng dẫn 05-HD/TU: Quý IV không phê duyệt riêng biệt mà tích lũy vào Cả Năm. Nhấn để chuyển sang đợt Đánh giá Cả Năm."

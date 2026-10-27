@@ -216,7 +216,7 @@ export function calculateAllStaffEvaluationsForPeriod({
 
     // A. TRƯỜNG HỢP CẢ NĂM:
     if (isYear) {
-      if (!existingEval && !hasQuarterlyEvals) {
+      if (!existingEval && !hasQuarterlyEvals && userTasks.length === 0) {
         return {
           id: staff.id,
           staffId: staff.id,
@@ -231,7 +231,7 @@ export function calculateAllStaffEvaluationsForPeriod({
           totalScore: null,
           grade: 'Chưa đánh giá',
           status: 'Chưa đánh giá',
-          tasksCount: userTasks.length,
+          tasksCount: 0,
           quarterlyAvgScore: 0,
           isCapped: false,
           capReason: '',
@@ -247,7 +247,7 @@ export function calculateAllStaffEvaluationsForPeriod({
         ? Number(existingEval.ethicsScore)
         : (existingEval?.bossEthicsScore != null
             ? Number(existingEval.bossEthicsScore)
-            : (quarterlyAvgScore > 0 ? Math.round(quarterlyAvgScore * 0.3 * 10) / 10 : null));
+            : (quarterlyAvgScore > 0 ? Math.round(quarterlyAvgScore * 0.3 * 10) / 10 : 28.0));
 
       const totalScore = existingEval?.totalScore != null
         ? Number(existingEval.totalScore)
@@ -268,7 +268,9 @@ export function calculateAllStaffEvaluationsForPeriod({
         ethicsScore,
         totalScore,
         grade,
-        status: existingEval?.status || 'Đã đánh giá',
+        status: existingEval?.status
+          ? (existingEval.status === 'APPROVED' ? 'Đã duyệt' : (existingEval.status === 'REJECTED' ? 'Bị từ chối' : 'Chờ duyệt'))
+          : (hasQuarterlyEvals ? 'Tổng hợp 4 quý' : 'Tạm tính (Chưa chốt)'),
         tasksCount: userTasks.length,
         quarterlyAvgScore,
         isCapped: capInfo.isCapped,
@@ -277,9 +279,10 @@ export function calculateAllStaffEvaluationsForPeriod({
       };
     }
 
-    // B. TRƯỜNG HỢP THEO KỲ (THÁNG / QUÝ):
-    // Nếu KHÔNG có bản ghi đánh giá trong kỳ này -> Hiển thị "Chưa đánh giá", dấu "-" và TUYỆT ĐỐI KHÔNG tính điểm mặc định
-    if (!existingEval) {
+    // B. TRƯỜNG HỢP CHU KỲ THÁNG:
+    // Theo quy định Hướng dẫn 05-HD/TU: Tháng chỉ tính điểm KPI công việc thực tế (Max 70đ), KHÔNG xếp loại chất lượng, KHÔNG có quyết định phê duyệt tháng
+    if (periodNorm.isMonth) {
+      const autoKPIScore = userTasks.length > 0 ? calculateTotalKPIScore(userTasks, staff, masterStaffList) : null;
       return {
         id: staff.id,
         staffId: staff.id,
@@ -289,11 +292,81 @@ export function calculateAllStaffEvaluationsForPeriod({
         deptName,
         vtvlId: staff.vtvlId,
         vtvlTitle,
-        autoKPIScore: null,
+        autoKPIScore,
         ethicsScore: null,
-        totalScore: null,
-        grade: 'Chưa đánh giá',
-        status: 'Chưa đánh giá',
+        totalScore: autoKPIScore,
+        grade: '—', // Chu kỳ tháng không xếp loại chất lượng
+        status: userTasks.length > 0 ? 'Tiến độ tháng' : 'Chưa có việc',
+        tasksCount: userTasks.length,
+        quarterlyAvgScore: 0,
+        isCapped: false,
+        capReason: '',
+        quarterlyEvals,
+      };
+    }
+
+    // C. TRƯỜNG HỢP CHU KỲ QUÝ (Quý 1, 2, 3, 4):
+    // 1. NẾU CÓ BẢN GHI ĐÁNH GIÁ TRONG KỲ NÀY -> Lấy đúng dữ liệu mới nhất từ bản ghi đánh giá
+    if (existingEval) {
+      const autoKPIScore = existingEval.autoKPIScore != null
+        ? Number(existingEval.autoKPIScore)
+        : (userTasks.length > 0 ? calculateTotalKPIScore(userTasks, staff, masterStaffList) : null);
+
+      const ethicsScore = existingEval.ethicsScore != null
+        ? Number(existingEval.ethicsScore)
+        : (existingEval.bossEthicsScore != null ? Number(existingEval.bossEthicsScore) : null);
+
+      const totalScore = existingEval.totalScore != null
+        ? Number(existingEval.totalScore)
+        : (autoKPIScore != null && ethicsScore != null ? Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10) : null);
+
+      const grade = existingEval.grade || (totalScore != null ? determineGrade(totalScore) : 'Chưa đánh giá');
+
+      return {
+        id: staff.id,
+        staffId: staff.id,
+        employeeCode: staff.employeeCode || `CB-${staff.id}`,
+        name: staff.name,
+        deptId: staff.deptId,
+        deptName,
+        vtvlId: staff.vtvlId,
+        vtvlTitle,
+        autoKPIScore,
+        ethicsScore,
+        totalScore,
+        grade,
+        status: existingEval.status === 'APPROVED' ? 'Đã duyệt' : (existingEval.status === 'REJECTED' ? 'Bị từ chối' : 'Chờ duyệt'),
+        tasksCount: userTasks.length,
+        quarterlyAvgScore,
+        isCapped: false,
+        capReason: '',
+        quarterlyEvals,
+      };
+    }
+
+    // 2. NẾU CHƯA CÓ BẢN GHI ĐÁNH GIÁ NHƯNG CÓ NHIỆM VỤ TRONG KỲ (nhiệm vụ tháng gom lại thành quý):
+    // Tự động gom các nhiệm vụ tháng để tính điểm KPI thực tế (Max 70đ) và tính điểm phẩm chất tạm tính
+    if (userTasks.length > 0) {
+      const autoKPIScore = calculateTotalKPIScore(userTasks, staff, masterStaffList);
+      // Điểm phẩm chất tạm tính: lấy 30% điểm TB các quý đã có, hoặc mặc định 28.0 điểm
+      const ethicsScore = quarterlyAvgScore > 0 ? Math.round(quarterlyAvgScore * 0.3 * 10) / 10 : 28.0;
+      const totalScore = Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10);
+      const grade = determineGrade(totalScore);
+
+      return {
+        id: staff.id,
+        staffId: staff.id,
+        employeeCode: staff.employeeCode || `CB-${staff.id}`,
+        name: staff.name,
+        deptId: staff.deptId,
+        deptName,
+        vtvlId: staff.vtvlId,
+        vtvlTitle,
+        autoKPIScore,
+        ethicsScore,
+        totalScore,
+        grade,
+        status: 'Tạm tính (Chưa chốt)',
         tasksCount: userTasks.length,
         quarterlyAvgScore: quarterlyAvgScore > 0 ? quarterlyAvgScore : 0,
         isCapped: false,
@@ -302,21 +375,7 @@ export function calculateAllStaffEvaluationsForPeriod({
       };
     }
 
-    // NẾU CÓ BẢN GHI ĐÁNH GIÁ TRONG KỲ NÀY -> Lấy đúng dữ liệu mới nhất từ bản ghi đánh giá
-    const autoKPIScore = existingEval.autoKPIScore != null
-      ? Number(existingEval.autoKPIScore)
-      : (userTasks.length > 0 ? calculateTotalKPIScore(userTasks, staff, masterStaffList) : null);
-
-    const ethicsScore = existingEval.ethicsScore != null
-      ? Number(existingEval.ethicsScore)
-      : (existingEval.bossEthicsScore != null ? Number(existingEval.bossEthicsScore) : null);
-
-    const totalScore = existingEval.totalScore != null
-      ? Number(existingEval.totalScore)
-      : (autoKPIScore != null && ethicsScore != null ? Math.min(100, Math.round((autoKPIScore + ethicsScore) * 10) / 10) : null);
-
-    const grade = existingEval.grade || (totalScore != null ? determineGrade(totalScore) : 'Chưa đánh giá');
-
+    // 3. Nếu không có đánh giá VÀ không có nhiệm vụ nào trong kỳ:
     return {
       id: staff.id,
       staffId: staff.id,
@@ -326,13 +385,13 @@ export function calculateAllStaffEvaluationsForPeriod({
       deptName,
       vtvlId: staff.vtvlId,
       vtvlTitle,
-      autoKPIScore,
-      ethicsScore,
-      totalScore,
-      grade,
-      status: existingEval.status || 'Đã đánh giá',
-      tasksCount: userTasks.length,
-      quarterlyAvgScore,
+      autoKPIScore: null,
+      ethicsScore: null,
+      totalScore: null,
+      grade: 'Chưa giao việc',
+      status: 'Chưa giao việc',
+      tasksCount: 0,
+      quarterlyAvgScore: quarterlyAvgScore > 0 ? quarterlyAvgScore : 0,
       isCapped: false,
       capReason: '',
       quarterlyEvals,

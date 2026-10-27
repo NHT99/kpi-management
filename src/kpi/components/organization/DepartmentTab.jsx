@@ -33,11 +33,12 @@ import { useToast } from '../../hooks/useToast';
 import { INITIAL_DEPARTMENTS, INITIAL_VTVLS, INITIAL_STAFFS } from '../../data/organizationData';
 import { useAuth } from '../../../rbac/AuthContext';
 import { ROLES } from '../../../rbac/roles';
+import { logAction } from '../../utils/auditLogger';
 
 export default function DepartmentTab() {
   const [departments, setDepartments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
-  const { role } = useAuth();
+  const { role, currentUser } = useAuth();
   const { showToast, ToastComponent } = useToast();
 
   const isSuperAdmin = role === ROLES.SUPER_ADMIN;
@@ -84,6 +85,13 @@ export default function DepartmentTab() {
       )
     );
 
+    logAction(
+      'Cập nhật phòng ban',
+      currentUser,
+      `Cập nhật chức năng, nhiệm vụ phòng ban "${editDialog.dept.name}" (${editDialog.dept.code})`,
+      'Quản lý Tổ chức & VTVL'
+    );
+
     showToast(`Đã cập nhật thông tin "${editDialog.dept.name}" thành công!`, 'success');
     setEditDialog({ open: false, dept: null });
   };
@@ -110,6 +118,14 @@ export default function DepartmentTab() {
     };
 
     setDepartments((prev) => [...prev, newDept]);
+
+    logAction(
+      'Thêm mới phòng ban',
+      currentUser,
+      `Thêm mới phòng ban "${formData.name}" (Mã: ${formData.code})`,
+      'Quản lý Tổ chức & VTVL'
+    );
+
     showToast(`Đã thêm mới phòng ban "${formData.name}" thành công!`, 'success');
     setAddDialog(false);
   };
@@ -118,6 +134,14 @@ export default function DepartmentTab() {
     if (!deleteDialog.dept) return;
 
     setDepartments((prev) => prev.filter((d) => d.id !== deleteDialog.dept.id));
+
+    logAction(
+      'Xóa phòng ban',
+      currentUser,
+      `Xóa phòng ban "${deleteDialog.dept.name}" (Mã: ${deleteDialog.dept.code})`,
+      'Quản lý Tổ chức & VTVL'
+    );
+
     showToast(`Đã xóa phòng ban "${deleteDialog.dept.name}" thành công!`, 'success');
     setDeleteDialog({ open: false, dept: null });
   };

@@ -11,6 +11,7 @@ import SideMenuMobile from './SideMenuMobile';
 import MenuButton from './MenuButton';
 import ColorModeIconDropdown from '../../shared-theme/ColorModeIconDropdown';
 import RoleSwitcher from '../../kpi/components/RoleSwitcher';
+import { useNavigation } from '../../kpi/NavigationContext';
 
 const Toolbar = styled(MuiToolbar)({
   width: '100%',
@@ -25,6 +26,7 @@ const Toolbar = styled(MuiToolbar)({
 
 export default function AppNavbar() {
   const [open, setOpen] = React.useState(false);
+  const { goToHome } = useNavigation();
 
   const toggleDrawer = (newOpen) => () => {
     setOpen(newOpen);
@@ -56,7 +58,15 @@ export default function AppNavbar() {
           <Stack
             direction="row"
             spacing={1}
-            sx={{ justifyContent: 'center', mr: 'auto', alignItems: 'center' }}
+            onClick={goToHome}
+            sx={{
+              justifyContent: 'center',
+              mr: 'auto',
+              alignItems: 'center',
+              cursor: 'pointer',
+              userSelect: 'none',
+              '&:hover': { opacity: 0.85 },
+            }}
           >
             <CustomIcon />
             <Typography variant="subtitle1" component="h1" sx={{ color: 'text.primary', fontWeight: 800 }}>

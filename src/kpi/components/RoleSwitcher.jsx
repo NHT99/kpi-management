@@ -13,10 +13,12 @@ import SwapHorizRoundedIcon from '@mui/icons-material/SwapHorizRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import { useAuth } from '../../rbac/AuthContext';
+import { useNavigation } from '../NavigationContext';
 import { ROLE_DETAILS, getUserRoleBadge } from '../../rbac/roles';
 
 export default function RoleSwitcher() {
   const { currentUser, roleDetails, users, switchUser } = useAuth();
+  const { goToHome } = useNavigation();
   const [anchorEl, setAnchorEl] = useState(null);
   const open = Boolean(anchorEl);
 
@@ -30,6 +32,7 @@ export default function RoleSwitcher() {
 
   const handleSelectUser = (userId) => {
     switchUser(userId);
+    goToHome();
     handleClose();
   };
 

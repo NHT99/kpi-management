@@ -19,6 +19,7 @@ import Tooltip from '@mui/material/Tooltip';
 import InputAdornment from '@mui/material/InputAdornment';
 import Divider from '@mui/material/Divider';
 import Paper from '@mui/material/Paper';
+import Alert from '@mui/material/Alert';
 import { DataGrid, GridToolbarContainer, GridToolbarExport } from '@mui/x-data-grid';
 import { PieChart } from '@mui/x-charts/PieChart';
 import { BarChart } from '@mui/x-charts/BarChart';
@@ -44,7 +45,7 @@ import { useAuth } from '../../rbac/AuthContext';
 import { ROLES, isSameDept } from '../../rbac/roles';
 import { getAllUsers } from '../../rbac/users';
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS } from '../data/mockKPIData';
+import { INITIAL_ASSIGNED_TASKS, INITIAL_EVALUATIONS, INITIAL_AGENCY_APPROVALS } from '../data/mockKPIData';
 import { INITIAL_STAFFS, INITIAL_DEPARTMENTS, INITIAL_VTVLS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
 import {
@@ -73,6 +74,7 @@ export default function KPIOverviewView() {
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [vtvls] = useLocalStorage('kpi_vtvls', INITIAL_VTVLS);
   const [evaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
+  const [agencyApprovals] = useLocalStorage('kpi_agency_approval', INITIAL_AGENCY_APPROVALS);
   const { showToast, ToastComponent } = useToast();
 
   // RBAC permissions check
@@ -123,6 +125,11 @@ export default function KPIOverviewView() {
   }, [staffs]);
 
   const selectedNorm = useMemo(() => normalizePeriodAndQuarter(selectedPeriod), [selectedPeriod]);
+  const isPeriodApproved = useMemo(() => {
+    if (selectedNorm.isYear) return Boolean(agencyApprovals['YEAR_2026']?.isApproved);
+    if (selectedNorm.isQuarter) return Boolean(agencyApprovals[selectedNorm.periodKey]?.isApproved);
+    return false;
+  }, [selectedNorm, agencyApprovals]);
   const selectedPeriodObj = EVALUATION_PERIODS.find((p) => p.value === selectedPeriod);
   const selectedPeriodLabel = selectedNorm.display || (selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod);
 
@@ -607,6 +614,22 @@ export default function KPIOverviewView() {
             },
           },
         };
+      case '—':
+      case 'Tích lũy Quý':
+        return {
+          variant: 'outlined',
+          label: 'Tích lũy Quý',
+          sx: {
+            fontWeight: 600,
+            color: 'text.secondary',
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+            '& .MuiChip-label': {
+              color: 'text.secondary',
+              fontWeight: 600,
+            },
+          },
+        };
       case 'Chưa đánh giá':
       default:
         return {
@@ -858,10 +881,10 @@ export default function KPIOverviewView() {
                 }}
               >
                 {selectedNorm.isYear
-                  ? 'Xuất Quyết định Xếp loại Cả Năm'
+                  ? (isPeriodApproved ? 'Xuất Quyết định Xếp loại Cả Năm (Chính thức)' : 'Xuất Dự thảo Quyết định Cả Năm')
                   : selectedNorm.isQuarter
-                    ? `Xuất Quyết định Xếp loại ${selectedNorm.display}`
-                    : `Xuất Báo cáo Kết quả ${selectedNorm.display}`}
+                    ? (isPeriodApproved ? `Xuất Quyết định Xếp loại ${selectedNorm.display} (Chính thức)` : `Xuất Dự thảo Báo cáo ${selectedNorm.display}`)
+                    : `Xuất Báo cáo Tiến độ ${selectedNorm.display}`}
               </Button>
               <Button
                 variant="outlined"
@@ -953,6 +976,13 @@ export default function KPIOverviewView() {
           </Stack>
         </CardContent>
       </Card>
+
+      {/* Thông báo quy định Tháng theo Hướng dẫn 05-HD/TU */}
+      {selectedNorm.isMonth && (
+        <Alert severity="info" variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
+          <strong>Quy định nghiệp vụ (Hướng dẫn 05-HD/TU):</strong> Chu kỳ Tháng chỉ tính điểm KPI công việc thực tế (tối đa 70 điểm) và theo dõi tiến độ sản phẩm để tích lũy cho Quý. <strong>Không xếp hạng/xếp loại chất lượng và không ban hành Quyết định xếp loại theo Tháng</strong>.
+        </Alert>
+      )}
 
       {/* KHỐI 2: Thẻ Thống Kê Nhanh (Summary Cards) */}
       <Grid container spacing={2} sx={{ mb: 3 }}>

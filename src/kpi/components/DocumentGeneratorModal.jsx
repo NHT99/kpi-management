@@ -23,6 +23,7 @@ import Divider from '@mui/material/Divider';
 import Chip from '@mui/material/Chip';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
+import Alert from '@mui/material/Alert';
 import TableCell from '@mui/material/TableCell';
 import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
@@ -40,13 +41,13 @@ import { getFullYearQuarterOptions, normalizePeriodAndQuarter } from '../utils/q
 import { calculateAllStaffEvaluationsForPeriod } from '../utils/yearWorkflowHelper';
 import { isSameDept } from '../../rbac/roles';
 
-const { allOptions: EVALUATION_PERIODS, groupedOptions } = getFullYearQuarterOptions();
+const { allOptions: EVALUATION_PERIODS, quarters, yearOption } = getFullYearQuarterOptions();
 
 export default function DocumentGeneratorModal({
   open,
   onClose,
-  initialPeriod = 'YEAR_2026',
-  initialDocType = 'DECISION_39',
+  initialPeriod = 'Q3_2026',
+  initialDocType = 'REPORT_05',
   staffList = [],
   departments = [],
   allStaffs = [],
@@ -58,15 +59,27 @@ export default function DocumentGeneratorModal({
 }) {
   const resolveDocType = (type) => (type === 'REPORT_MONTH' ? 'REPORT_05' : type);
   const [selectedDocType, setSelectedDocType] = useState(resolveDocType(initialDocType)); // 'REPORT_05' | 'DECISION_39'
-  const [period, setPeriod] = useState(initialPeriod);
+  const [period, setPeriod] = useState(() => {
+    const norm = normalizePeriodAndQuarter(initialPeriod);
+    if (initialDocType === 'DECISION_39' || norm.isYear) return 'YEAR_2026';
+    if (norm.isQuarter) return norm.periodKey;
+    return `Q${norm.quarter || 3}_2026`;
+  });
 
   // Sync state whenever modal is opened OR when initialPeriod changes
   const [prevOpen, setPrevOpen] = useState(open);
   if (open !== prevOpen) {
     setPrevOpen(open);
     if (open) {
-      if (initialPeriod) setPeriod(initialPeriod);
-      if (initialDocType) setSelectedDocType(resolveDocType(initialDocType));
+      const norm = normalizePeriodAndQuarter(initialPeriod);
+      if (initialDocType === 'DECISION_39' || norm.isYear) {
+        setSelectedDocType('DECISION_39');
+        setPeriod('YEAR_2026');
+      } else {
+        setSelectedDocType('REPORT_05');
+        const targetQ = norm.isQuarter ? norm.periodKey : `Q${norm.quarter || 3}_2026`;
+        setPeriod(targetQ);
+      }
     }
   }
 
@@ -329,14 +342,24 @@ export default function DocumentGeneratorModal({
                 <RadioGroup
                   row
                   value={selectedDocType}
-                  onChange={(e) => setSelectedDocType(e.target.value)}
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    setSelectedDocType(newType);
+                    if (newType === 'REPORT_05') {
+                      if (period === 'YEAR_2026' || period.startsWith('M')) {
+                        handlePeriodChange('Q3_2026');
+                      }
+                    } else if (newType === 'DECISION_39') {
+                      handlePeriodChange('YEAR_2026');
+                    }
+                  }}
                 >
                   <FormControlLabel
                     value="REPORT_05"
                     control={<Radio size="small" />}
                     label={
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {isMonthPeriod ? 'Báo cáo Tháng (05-HD/TU)' : 'Báo cáo Quý (05-HD/TU)'}
+                        Báo cáo Quý (05-HD/TU)
                       </Typography>
                     }
                   />
@@ -362,9 +385,9 @@ export default function DocumentGeneratorModal({
                   label="Kỳ thống kê"
                   onChange={(e) => handlePeriodChange(e.target.value)}
                 >
-                  {groupedOptions.map((grp) => [
+                  {selectedDocType === 'REPORT_05' ? [
                     <ListSubheader
-                      key={grp.group}
+                      key="grp-quarters"
                       sx={{
                         fontWeight: 800,
                         bgcolor: 'action.hover',
@@ -372,14 +395,29 @@ export default function DocumentGeneratorModal({
                         lineHeight: '32px',
                       }}
                     >
-                      {grp.group}
+                      Chu kỳ Quý (4 quý)
                     </ListSubheader>,
-                    ...grp.items.map((p) => (
+                    ...quarters.map((p) => (
                       <MenuItem key={p.value} value={p.value} sx={{ pl: 3 }}>
                         {p.label}
                       </MenuItem>
                     )),
-                  ])}
+                  ] : [
+                    <ListSubheader
+                      key="grp-year"
+                      sx={{
+                        fontWeight: 800,
+                        bgcolor: 'action.hover',
+                        color: 'primary.main',
+                        lineHeight: '32px',
+                      }}
+                    >
+                      Chu kỳ Năm
+                    </ListSubheader>,
+                    <MenuItem key={yearOption.value} value={yearOption.value} sx={{ pl: 3 }}>
+                      {yearOption.label}
+                    </MenuItem>,
+                  ]}
                 </Select>
               </FormControl>
             </Grid>
@@ -406,6 +444,12 @@ export default function DocumentGeneratorModal({
             </Grid>
           </Grid>
         </Paper>
+
+        {period === 'Q4_2026' && selectedDocType === 'REPORT_05' && (
+          <Alert severity="info" variant="outlined" sx={{ mb: 2.5, borderRadius: 2, '@media print': { display: 'none !important' } }}>
+            <strong>Lưu ý nghiệp vụ (Hướng dẫn 05-HD/TU):</strong> Quý IV không ban hành Quyết định xếp loại riêng. Toàn bộ tiến độ và khối lượng công việc Quý IV được tích lũy trực tiếp vào đợt <strong>Tổng kết Đánh giá Cả Năm</strong>. Văn bản dưới đây phục vụ báo cáo tiến độ nội bộ Quý IV.
+          </Alert>
+        )}
 
         {/* Document Preview Box (Styled as Official State Administrative Paper) */}
         <Paper
@@ -483,9 +527,7 @@ export default function DocumentGeneratorModal({
                   mb: 3,
                 }}
               >
-                {isMonthPeriod
-                  ? `Kết quả theo dõi, đánh giá công tác cán bộ ${periodLabel}`
-                  : `Tổng hợp kết quả đánh giá, xếp loại chất lượng cán bộ, công chức ${periodLabel}`}
+                Tổng hợp kết quả đánh giá, xếp loại chất lượng cán bộ, công chức {periodLabel}
                 <br />
                 <span style={{ fontSize: '11pt', fontWeight: 'normal', fontStyle: 'italic' }}>
                   (Theo Hướng dẫn số 05-HD/TU ngày 22/12/2023 của Ban Thường vụ Tỉnh ủy)
@@ -493,7 +535,7 @@ export default function DocumentGeneratorModal({
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12pt', textAlign: 'justify', mb: 1.5, textIndent: '1.27cm' }}>
-                Căn cứ Quy định số 39-QĐ/TU của Ban Thường vụ Tỉnh ủy về quản lý, đánh giá chất lượng cán bộ; thực hiện Hướng dẫn số 05-HD/TU về việc theo dõi, chấm điểm KPI và đánh giá công chức, viên chức cơ quan chuyên trách tham mưu Tỉnh ủy; Ban Tổ chức Tỉnh ủy báo cáo tổng hợp kết quả {isMonthPeriod ? 'theo dõi, đánh giá' : 'đánh giá'} {periodLabel} như sau:
+                Căn cứ Quy định số 39-QĐ/TU của Ban Thường vụ Tỉnh ủy về quản lý, đánh giá chất lượng cán bộ; thực hiện Hướng dẫn số 05-HD/TU về việc theo dõi, chấm điểm KPI và đánh giá công chức, viên chức cơ quan chuyên trách tham mưu Tỉnh ủy; Ban Tổ chức Tỉnh ủy báo cáo tổng hợp kết quả đánh giá {periodLabel} như sau:
               </Typography>
 
               <Typography sx={{ fontFamily: 'inherit', fontSize: '12.5pt', fontWeight: 'bold', mb: 1 }}>

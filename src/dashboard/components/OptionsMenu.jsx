@@ -11,6 +11,7 @@ import LogoutRoundedIcon from '@mui/icons-material/LogoutRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import MenuButton from './MenuButton';
 import { useAuth } from '../../rbac/AuthContext';
+import { useNavigation } from '../../kpi/NavigationContext';
 
 const MenuItem = styled(MuiMenuItem)({
   margin: '2px 0',
@@ -18,6 +19,7 @@ const MenuItem = styled(MuiMenuItem)({
 
 export default function OptionsMenu() {
   const { logout } = useAuth();
+  const { goToHome } = useNavigation();
   const [anchorEl, setAnchorEl] = React.useState(null);
   const open = Boolean(anchorEl);
   const handleClick = (event) => {
@@ -28,6 +30,7 @@ export default function OptionsMenu() {
   };
   const handleLogout = () => {
     handleClose();
+    goToHome();
     logout();
   };
   return (

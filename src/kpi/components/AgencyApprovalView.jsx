@@ -73,6 +73,10 @@ export default function AgencyApprovalView() {
     'kpi_agency_approval',
     INITIAL_AGENCY_APPROVALS
   );
+  const [deptApprovals, setDeptApprovals] = useLocalStorage(
+    'kpi_agency_dept_approvals',
+    {}
+  );
   const [evaluations, setEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
@@ -96,7 +100,7 @@ export default function AgencyApprovalView() {
   // Modal văn bản quyết định
   const [docModalOpen, setDocModalOpen] = useState(false);
 
-  // Dialog phê duyệt
+  // Dialog phê duyệt toàn cơ quan
   const [approveDialog, setApproveDialog] = useState({
     open: false,
     decisionNumber: '128/QĐ-BQL',
@@ -104,9 +108,23 @@ export default function AgencyApprovalView() {
       'Hội đồng đánh giá thẩm định và thống nhất biểu quyết 100% công nhận kết quả đánh giá KPI của các phòng chuyên môn.',
   });
 
-  // Dialog từ chối / yêu cầu đánh giá lại
+  // Dialog từ chối toàn cơ quan / yêu cầu đánh giá lại
   const [rejectDialog, setRejectDialog] = useState({
     open: false,
+    reason: '',
+  });
+
+  // Dialog phê duyệt riêng từng phòng
+  const [singleDeptApproveDialog, setSingleDeptApproveDialog] = useState({
+    open: false,
+    dept: null,
+    councilNote: '',
+  });
+
+  // Dialog từ chối riêng từng phòng
+  const [singleDeptRejectDialog, setSingleDeptRejectDialog] = useState({
+    open: false,
+    dept: null,
     reason: '',
   });
 
@@ -308,12 +326,21 @@ export default function AgencyApprovalView() {
       const completionRate = avgProgress;
 
       // Trạng thái thẩm định của Phòng:
-      // - Nếu Quyết định toàn Ban đã được ký duyệt chính thức -> APPROVED ("Đã phê duyệt")
-      // - Nếu Lãnh đạo Ban phụ trách chưa phê duyệt kết quả Trưởng phòng -> PENDING_DEPT_EVALUATION ("Đang chờ đánh giá cấp phòng")
-      // - Nếu đã phê duyệt cấp phòng xong, đang chờ Hội đồng Ban họp và ký duyệt -> PENDING_COUNCIL ("Chờ Hội đồng duyệt")
+      const deptApprovalKey = `${selectedPeriod}_${dept.id}`;
+      const singleDeptApproval = deptApprovals?.[deptApprovalKey];
+
       let deptStatus = 'PENDING_DEPT_EVALUATION';
+      let statusNote = '';
+
       if (currentApproval.isApproved) {
         deptStatus = 'APPROVED';
+        statusNote = 'Đã phê duyệt theo Quyết định toàn cơ quan';
+      } else if (singleDeptApproval?.status === 'APPROVED') {
+        deptStatus = 'APPROVED';
+        statusNote = `Lãnh đạo Ban đã phê duyệt riêng (${singleDeptApproval.approvedBy || ''})`;
+      } else if (singleDeptApproval?.status === 'REJECTED') {
+        deptStatus = 'REJECTED';
+        statusNote = singleDeptApproval.reason || 'Yêu cầu rà soát lại kết quả';
       } else if (isHeadApprovedByBanLeader) {
         deptStatus = 'PENDING_COUNCIL';
       } else {
@@ -336,6 +363,8 @@ export default function AgencyApprovalView() {
         avgScore,
         reviewedCount: deptEvals.length,
         status: deptStatus,
+        statusNote,
+        singleDeptApproval,
         ratingDistribution: {
           xuatSac,
           tot,
@@ -344,7 +373,7 @@ export default function AgencyApprovalView() {
         },
       };
     });
-  }, [departments, allAvailableStaffs, evaluations, selectedPeriod, assignedTasks, currentApproval.isApproved]);
+  }, [departments, allAvailableStaffs, evaluations, selectedPeriod, assignedTasks, currentApproval.isApproved, deptApprovals]);
 
   const filteredDepts = dynamicDeptSummaries.filter((dept) => {
     if (!searchTerm) return true;
@@ -502,6 +531,119 @@ export default function AgencyApprovalView() {
       `Đã gửi yêu cầu từ chối và đề nghị các phòng ban rà soát lại kết quả KPI kỳ ${selectedPeriodLabel}!`
     );
     setRejectDialog({ open: false, reason: '' });
+  };
+
+  // --- THẨM ĐỊNH & PHÊ DUYỆT TỪNG PHÒNG RIÊNG BIỆT ---
+  const handleOpenApproveSingleDept = (dept) => {
+    setSingleDeptApproveDialog({
+      open: true,
+      dept,
+      councilNote: `Hội đồng thẩm định cấp Ban phê duyệt kết quả đánh giá KPI của ${dept.name} (${selectedPeriodLabel}).`,
+    });
+  };
+
+  const handleConfirmApproveSingleDept = () => {
+    if (!singleDeptApproveDialog.dept) return;
+    const targetDept = singleDeptApproveDialog.dept;
+    const approvalKey = `${selectedPeriod}_${targetDept.id}`;
+    const note = singleDeptApproveDialog.councilNote.trim() || 'Hội đồng thẩm định cấp Ban phê duyệt kết quả đánh giá KPI của phòng.';
+
+    // 1. Lưu phê duyệt phòng vào localStorage
+    setDeptApprovals((prev) => ({
+      ...(prev || {}),
+      [approvalKey]: {
+        status: 'APPROVED',
+        approvedBy: `${currentUser.name} (Lãnh đạo Ban)`,
+        approvedDate: new Date().toLocaleDateString('vi-VN'),
+        note,
+      },
+    }));
+
+    // 2. Chuyển hồ sơ đánh giá của các cán bộ trong phòng này sang APPROVED
+    setEvaluations((prev) => {
+      const list = prev || [];
+      return list.map((ev) => {
+        const isMember = targetDept.deptStaffList.some((s) => s.id === ev.staffId || s.name === ev.staffName);
+        if (isMember && (ev.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && ev.period === 'Q3_2026'))) {
+          return {
+            ...ev,
+            status: 'APPROVED',
+            approvedBy: `${currentUser.name} (Lãnh đạo Ban)`,
+            approverName: `${currentUser.name} (Lãnh đạo Ban)`,
+            councilNote: note,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return ev;
+      });
+    });
+
+    // 3. Log audit
+    logAction(
+      'Phê duyệt cấp Ban theo phòng',
+      currentUser,
+      `Phê duyệt chính thức kết quả đánh giá KPI phòng ${targetDept.name} (${selectedPeriodLabel})`,
+      'Thẩm định & Phê duyệt'
+    );
+
+    setNotification(`Đã phê duyệt chính thức kết quả đánh giá của phòng ${targetDept.name}!`);
+    setSingleDeptApproveDialog({ open: false, dept: null, councilNote: '' });
+  };
+
+  const handleOpenRejectSingleDept = (dept) => {
+    setSingleDeptRejectDialog({
+      open: true,
+      dept,
+      reason: '',
+    });
+  };
+
+  const handleConfirmRejectSingleDept = () => {
+    if (!singleDeptRejectDialog.dept || !singleDeptRejectDialog.reason.trim()) return;
+    const targetDept = singleDeptRejectDialog.dept;
+    const approvalKey = `${selectedPeriod}_${targetDept.id}`;
+    const reasonText = singleDeptRejectDialog.reason.trim();
+
+    // 1. Lưu từ chối phòng vào localStorage
+    setDeptApprovals((prev) => ({
+      ...(prev || {}),
+      [approvalKey]: {
+        status: 'REJECTED',
+        rejectedBy: `${currentUser.name} (Lãnh đạo Ban)`,
+        rejectDate: new Date().toLocaleDateString('vi-VN'),
+        reason: reasonText,
+      },
+    }));
+
+    // 2. Chuyển hồ sơ đánh giá của các cán bộ trong phòng này sang REJECTED
+    setEvaluations((prev) => {
+      const list = prev || [];
+      return list.map((ev) => {
+        const isMember = targetDept.deptStaffList.some((s) => s.id === ev.staffId || s.name === ev.staffName);
+        if (isMember && (ev.period === selectedPeriod || (selectedPeriod === 'YEAR_2026' && ev.period === 'Q3_2026'))) {
+          return {
+            ...ev,
+            status: 'REJECTED',
+            rejectReason: reasonText,
+            rejectedBy: `${currentUser.name} (Lãnh đạo Ban)`,
+            rejectedTitle: currentUser.title || 'Lãnh đạo Ban',
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return ev;
+      });
+    });
+
+    // 3. Log audit
+    logAction(
+      'Từ chối cấp Ban theo phòng',
+      currentUser,
+      `Yêu cầu phòng ${targetDept.name} rà soát lại kết quả đánh giá KPI (${selectedPeriodLabel}). Lý do: ${reasonText}`,
+      'Thẩm định & Phê duyệt'
+    );
+
+    setNotification(`Đã gửi yêu cầu rà soát lại kết quả đánh giá tới phòng ${targetDept.name}!`);
+    setSingleDeptRejectDialog({ open: false, dept: null, reason: '' });
   };
 
   return (
@@ -889,11 +1031,11 @@ export default function AgencyApprovalView() {
                     <TableCell sx={{ fontWeight: 700 }}>Phòng ban chuyên môn</TableCell>
                     <TableCell sx={{ fontWeight: 700 }}>Lãnh đạo phòng</TableCell>
                     <TableCell sx={{ fontWeight: 700, width: 90 }} align="center">Nhân sự</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 160 }}>Tỷ lệ hoàn thành</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 150 }}>Tỷ lệ hoàn thành</TableCell>
                     <TableCell sx={{ fontWeight: 700, width: 110 }} align="center">Điểm TB phòng</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 190 }}>Cơ cấu xếp loại</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 180 }}>Cơ cấu xếp loại</TableCell>
                     <TableCell sx={{ fontWeight: 700, width: 180 }} align="center">Trạng thái thẩm định</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 90 }} align="center">Chi tiết</TableCell>
+                    <TableCell sx={{ fontWeight: 700, width: 220, whiteSpace: 'nowrap' }} align="center">Thao tác thẩm định</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -975,13 +1117,25 @@ export default function AgencyApprovalView() {
 
                           <TableCell align="center">
                             {dept.status === 'APPROVED' ? (
-                              <Chip
-                                icon={<CheckCircleRoundedIcon />}
-                                label="Đã phê duyệt"
-                                color="success"
-                                size="small"
-                                sx={{ fontWeight: 600, fontSize: '0.75rem' }}
-                              />
+                              <Tooltip title={dept.statusNote || 'Đã phê duyệt'} arrow>
+                                <Chip
+                                  icon={<CheckCircleRoundedIcon />}
+                                  label="Đã phê duyệt"
+                                  color="success"
+                                  size="small"
+                                  sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+                                />
+                              </Tooltip>
+                            ) : dept.status === 'REJECTED' ? (
+                              <Tooltip title={`Lý do: ${dept.statusNote || 'Yêu cầu rà soát lại'}`} arrow>
+                                <Chip
+                                  icon={<CancelRoundedIcon />}
+                                  label="Yêu cầu rà soát"
+                                  color="error"
+                                  size="small"
+                                  sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+                                />
+                              </Tooltip>
                             ) : dept.status === 'PENDING_DEPT_EVALUATION' ? (
                               <Chip
                                 icon={<HourglassEmptyRoundedIcon />}
@@ -1001,28 +1155,93 @@ export default function AgencyApprovalView() {
                             )}
                           </TableCell>
 
-                          <TableCell align="center">
-                            <Tooltip title="Xem chi tiết danh sách và trạng thái cán bộ">
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<VisibilityRoundedIcon />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDeptDetailModal({ open: true, dept });
-                                }}
-                                sx={{
-                                  textTransform: 'none',
-                                  borderRadius: 1.5,
-                                  py: 0.3,
-                                  px: 1,
-                                  fontSize: '0.75rem',
-                                  fontWeight: 600,
-                                }}
-                              >
-                                Chi tiết
-                              </Button>
-                            </Tooltip>
+                          <TableCell align="center" sx={{ whiteSpace: 'nowrap' }}>
+                            <Stack direction="row" spacing={0.75} justifyContent="center" alignItems="center">
+                              {dept.status !== 'APPROVED' ? (
+                                <Tooltip title={!canApprove ? 'Bạn không có quyền thẩm định cấp Ban' : `Phê duyệt kết quả ${dept.name}`} arrow>
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      color="success"
+                                      disabled={!canApprove}
+                                      startIcon={<CheckCircleRoundedIcon sx={{ fontSize: '15px !important' }} />}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenApproveSingleDept(dept);
+                                      }}
+                                      sx={{
+                                        textTransform: 'none',
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                        fontSize: '0.75rem',
+                                        px: 1,
+                                        py: 0.35,
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      Duyệt phòng
+                                    </Button>
+                                  </span>
+                                </Tooltip>
+                              ) : (
+                                <Chip
+                                  label="Đã duyệt"
+                                  size="small"
+                                  color="success"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 700, fontSize: '0.72rem', height: 24 }}
+                                />
+                              )}
+
+                              {dept.status !== 'REJECTED' && (
+                                <Tooltip title={!canApprove ? 'Bạn không có quyền thẩm định cấp Ban' : `Từ chối / Yêu cầu ${dept.name} rà soát lại`} arrow>
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      color="error"
+                                      disabled={!canApprove}
+                                      startIcon={<CancelRoundedIcon sx={{ fontSize: '15px !important' }} />}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenRejectSingleDept(dept);
+                                      }}
+                                      sx={{
+                                        textTransform: 'none',
+                                        borderRadius: 1.5,
+                                        fontWeight: 700,
+                                        fontSize: '0.75rem',
+                                        px: 0.8,
+                                        py: 0.35,
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      Từ chối
+                                    </Button>
+                                  </span>
+                                </Tooltip>
+                              )}
+
+                              <Tooltip title="Xem chi tiết danh sách và trạng thái cán bộ" arrow>
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDeptDetailModal({ open: true, dept });
+                                  }}
+                                  sx={{
+                                    border: '1px solid',
+                                    borderColor: 'divider',
+                                    borderRadius: 1.5,
+                                    p: 0.5,
+                                  }}
+                                >
+                                  <VisibilityRoundedIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
                           </TableCell>
                         </TableRow>
                       );
@@ -1153,6 +1372,110 @@ export default function AgencyApprovalView() {
             sx={{ textTransform: 'none', fontWeight: 700 }}
           >
             Xác nhận từ chối & Yêu cầu nộp lại
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog: Phê duyệt riêng từng phòng */}
+      <Dialog
+        open={singleDeptApproveDialog.open}
+        onClose={() => setSingleDeptApproveDialog({ open: false, dept: null, councilNote: '' })}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'success.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <CheckCircleRoundedIcon /> Phê duyệt kết quả KPI {singleDeptApproveDialog.dept?.name}
+        </DialogTitle>
+        <DialogContent dividers>
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              Người ký phê duyệt: {currentUser.name} ({currentUser.title || 'Lãnh đạo Ban'})
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Đơn vị: {singleDeptApproveDialog.dept?.name} • Kỳ đánh giá: {selectedPeriodLabel} • Trưởng phòng: {singleDeptApproveDialog.dept?.head}
+            </Typography>
+          </Box>
+
+          <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
+            Hành động này sẽ phê duyệt chính thức kết quả đánh giá KPI của toàn bộ cán bộ, công chức thuộc phòng <strong>{singleDeptApproveDialog.dept?.name}</strong> trong kỳ {selectedPeriodLabel}.
+          </Alert>
+
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            label="Kết luận thẩm định của Lãnh đạo Ban (Tùy chọn)"
+            value={singleDeptApproveDialog.councilNote}
+            onChange={(e) => setSingleDeptApproveDialog((prev) => ({ ...prev, councilNote: e.target.value }))}
+            placeholder="Nêu nhận xét kết luận phê duyệt cho phòng ban..."
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button
+            onClick={() => setSingleDeptApproveDialog({ open: false, dept: null, councilNote: '' })}
+            color="inherit"
+            sx={{ textTransform: 'none' }}
+          >
+            Hủy bỏ
+          </Button>
+          <Button
+            onClick={handleConfirmApproveSingleDept}
+            variant="contained"
+            color="success"
+            startIcon={<CheckCircleRoundedIcon />}
+            sx={{ textTransform: 'none', fontWeight: 700 }}
+          >
+            Xác nhận Phê duyệt phòng
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog: Từ chối / Yêu cầu phòng rà soát lại */}
+      <Dialog
+        open={singleDeptRejectDialog.open}
+        onClose={() => setSingleDeptRejectDialog({ open: false, dept: null, reason: '' })}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <CancelRoundedIcon /> Từ chối & Yêu cầu rà soát lại ({singleDeptRejectDialog.dept?.name})
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <Alert severity="warning" sx={{ mb: 2, borderRadius: 2 }}>
+            Hành động này sẽ gửi thông báo yêu cầu <strong>{singleDeptRejectDialog.dept?.name}</strong> rà soát, điều chỉnh lại hồ sơ đánh giá KPI kỳ{' '}
+            <strong>{selectedPeriodLabel}</strong>. Trạng thái đánh giá của phòng sẽ chuyển thành <strong>Yêu cầu rà soát</strong> để Trưởng phòng và cán bộ nộp lại.
+          </Alert>
+
+          <TextField
+            fullWidth
+            required
+            multiline
+            rows={4}
+            label="Lý do từ chối & Yêu cầu điều chỉnh (Bắt buộc)"
+            value={singleDeptRejectDialog.reason}
+            onChange={(e) => setSingleDeptRejectDialog((prev) => ({ ...prev, reason: e.target.value }))}
+            placeholder="Ví dụ: Tỷ lệ hoàn thành nhiệm vụ chưa tương xứng với sản phẩm đầu ra; cần rà soát lại tiêu chí tiến độ của một số chuyên viên..."
+            error={singleDeptRejectDialog.reason !== '' && !singleDeptRejectDialog.reason.trim()}
+            helperText="Nêu rõ lý do và chỉ dẫn điều chỉnh để phòng chuyên môn thực hiện"
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button
+            onClick={() => setSingleDeptRejectDialog({ open: false, dept: null, reason: '' })}
+            color="inherit"
+            sx={{ textTransform: 'none' }}
+          >
+            Hủy bỏ
+          </Button>
+          <Button
+            onClick={handleConfirmRejectSingleDept}
+            variant="contained"
+            color="error"
+            disabled={!singleDeptRejectDialog.reason.trim()}
+            startIcon={<CancelRoundedIcon />}
+            sx={{ textTransform: 'none', fontWeight: 700 }}
+          >
+            Xác nhận Từ chối & Yêu cầu rà soát
           </Button>
         </DialogActions>
       </Dialog>
@@ -1394,7 +1717,45 @@ export default function AgencyApprovalView() {
             </TableContainer>
           )}
         </DialogContent>
-        <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+        <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            {canApprove && deptDetailModal.dept && (
+              <>
+                {deptDetailModal.dept.status !== 'REJECTED' && (
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    startIcon={<CancelRoundedIcon />}
+                    onClick={() => {
+                      const dept = deptDetailModal.dept;
+                      setDeptDetailModal({ open: false, dept: null });
+                      handleOpenRejectSingleDept(dept);
+                    }}
+                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
+                  >
+                    Từ chối / Yêu cầu phòng rà soát lại
+                  </Button>
+                )}
+                {deptDetailModal.dept.status !== 'APPROVED' && (
+                  <Button
+                    variant="contained"
+                    color="success"
+                    size="small"
+                    startIcon={<CheckCircleRoundedIcon />}
+                    onClick={() => {
+                      const dept = deptDetailModal.dept;
+                      setDeptDetailModal({ open: false, dept: null });
+                      handleOpenApproveSingleDept(dept);
+                    }}
+                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
+                  >
+                    Phê duyệt kết quả phòng này
+                  </Button>
+                )}
+              </>
+            )}
+          </Box>
           <Button onClick={() => setDeptDetailModal({ open: false, dept: null })} variant="contained" sx={{ textTransform: 'none', fontWeight: 600 }}>
             Đóng
           </Button>

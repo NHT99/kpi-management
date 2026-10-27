@@ -100,7 +100,7 @@ export default function PeriodMatrixPicker({
         type: 'THÁNG',
         typeColor: 'primary',
         title: `Tháng ${selectedNorm.month} / ${selectedNorm.year}`,
-        tag: mObj?.isCurrent ? 'Hiện tại' : mObj?.isPast ? 'Đã qua' : 'Chưa đến',
+        tag: mObj?.isCurrent ? 'Hiện tại' : mObj?.isPast ? 'Đã kết thúc' : 'Chưa đến',
         tagColor: mObj?.isCurrent ? 'success' : 'default',
       };
     }
@@ -110,7 +110,7 @@ export default function PeriodMatrixPicker({
       type: 'QUÝ',
       typeColor: 'secondary',
       title: `Quý ${selectedNorm.roman} / ${selectedNorm.year}`,
-      tag: qObj?.isCurrent ? 'Hiện tại' : qObj?.isPast ? 'Đã qua' : 'Chưa đến',
+      tag: qObj?.isCurrent ? 'Hiện tại' : qObj?.isPast ? 'Đã kết thúc' : 'Chưa đến',
       tagColor: qObj?.isCurrent ? 'success' : 'default',
     };
   }, [selectedNorm, months, quarters]);
@@ -305,7 +305,7 @@ export default function PeriodMatrixPicker({
           <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
             <Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: 'text.disabled', flexShrink: 0 }} />
             <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, lineHeight: 1, fontSize: '0.75rem' }}>
-              Đã qua (Đã khóa)
+              Đã kết thúc
             </Typography>
           </Box>
 
@@ -429,7 +429,7 @@ export default function PeriodMatrixPicker({
                     </Typography>
                     <Box sx={{ mt: 0.3, display: 'flex', justifyContent: 'center' }}>
                       <Chip
-                        label={q.isCurrent ? 'Hiện tại' : q.isPast ? 'Đã qua' : 'Sắp tới'}
+                        label={q.isCurrent ? 'Hiện tại' : q.isPast ? 'Đã kết thúc' : 'Sắp tới'}
                         size="small"
                         sx={{
                           height: 18,
@@ -522,7 +522,7 @@ export default function PeriodMatrixPicker({
                             />
                           ) : m.isPast ? (
                             <Typography variant="caption" sx={{ fontSize: '0.62rem', color: 'text.disabled' }}>
-                              Đã qua
+                              Đã kết thúc
                             </Typography>
                           ) : (
                             <Typography variant="caption" sx={{ fontSize: '0.62rem', color: 'text.disabled' }}>

@@ -12,11 +12,13 @@ import Tooltip from '@mui/material/Tooltip';
 
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded';
 
 import SelectContent from './SelectContent';
 import MenuContent from './MenuContent';
 import OptionsMenu from './OptionsMenu';
 import { useAuth } from '../../rbac/AuthContext';
+import { useNavigation } from '../../kpi/NavigationContext';
 
 const drawerWidth = 260;
 const collapsedDrawerWidth = 78;
@@ -43,6 +45,7 @@ const Drawer = styled(MuiDrawer, { shouldForwardProp: (prop) => prop !== 'collap
 
 export default function SideMenu() {
   const { currentUser, roleDetails } = useAuth();
+  const { goToHome } = useNavigation();
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -61,40 +64,23 @@ export default function SideMenu() {
         sx={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: collapsed ? 'center' : 'space-between',
+          justifyContent: collapsed ? 'center' : 'flex-start',
           mt: 'calc(var(--template-frame-height, 0px) + 4px)',
-          p: collapsed ? 1.5 : 1.5,
+          p: 1.5,
           minHeight: 64,
         }}
       >
         {!collapsed ? (
-          <>
-            <SelectContent />
-            <Tooltip title="Thu gọn Menu" placement="right" arrow>
-              <IconButton
-                size="small"
-                onClick={() => setCollapsed(true)}
-                sx={{
-                  bgcolor: 'action.hover',
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  borderRadius: 1.5,
-                  p: 0.6,
-                  '&:hover': { bgcolor: 'action.selected', color: 'primary.main', borderColor: 'primary.main' },
-                }}
-              >
-                <ChevronLeftRoundedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </>
+          <SelectContent />
         ) : (
-          <Tooltip title="Hệ thống Quản lý KPI - Bộ Nội vụ (Nhấn để mở rộng)" placement="right" arrow>
+          <Tooltip title="Trang chủ - BTCTU MANAGEMENT" placement="right" arrow>
             <Avatar
-              onClick={() => setCollapsed(false)}
+              onClick={goToHome}
               sx={{
                 width: 42,
                 height: 42,
                 bgcolor: 'primary.main',
+                backgroundImage: 'linear-gradient(135deg, #1976d2 0%, #0d47a1 100%)',
                 fontWeight: 800,
                 fontSize: '1.05rem',
                 borderRadius: 2.5,
@@ -107,7 +93,7 @@ export default function SideMenu() {
                 },
               }}
             >
-              BT
+              <AssessmentRoundedIcon sx={{ fontSize: '1.4rem', color: '#fff' }} />
             </Avatar>
           </Tooltip>
         )}

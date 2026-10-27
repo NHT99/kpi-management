@@ -29,11 +29,18 @@ export function NavigationProvider({ children }) {
 
   const [userSelectedTab, setUserSelectedTab] = useState(getTabFromPath());
   const [prevRole, setPrevRole] = useState(role);
+  const [prevUserId, setPrevUserId] = useState(currentUser?.id);
 
-  // When role changes, reset selection to role's primary view without an effect
-  if (prevRole !== role) {
+  // When role changes or user changes, reset selection to role's primary view (Trang chủ)
+  if (prevRole !== role || prevUserId !== currentUser?.id) {
     setPrevRole(role);
+    setPrevUserId(currentUser?.id);
     setUserSelectedTab(null);
+    try {
+      window.history.pushState(null, '', '/');
+    } catch {
+      // Ignore in non-browser env
+    }
   }
 
   const defaultTab =
@@ -55,12 +62,23 @@ export function NavigationProvider({ children }) {
     window.history.pushState({ tab }, '', `/${tab}`);
   };
 
+  const goToHome = () => {
+    setUserSelectedTab(null);
+    try {
+      window.history.pushState(null, '', '/');
+    } catch {
+      // Ignore
+    }
+  };
+
   // Listen to popstate events (browser back/forward)
   useEffect(() => {
     const handlePopState = () => {
       const tab = getTabFromPath();
       if (tab) {
         setUserSelectedTab(tab);
+      } else {
+        setUserSelectedTab(null);
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -70,6 +88,8 @@ export function NavigationProvider({ children }) {
   const value = {
     activeTab,
     setActiveTab: handleSetActiveTab,
+    goToHome,
+    defaultTab,
     NAV_TABS,
   };
 

@@ -344,9 +344,8 @@ export function getOkrDept(okr, departments = [], allStaffs = [], tasks = []) {
   if (!okr) return '';
   if (okr.deptId) return normalizeDept(okr.deptId);
 
-  // 1. Fast-path: các OKR đã biết theo mã hoặc tên chủ sở hữu/người tạo
+  // 1. Fast-path: các OKR mẫu đã biết theo mã hoặc tên chủ sở hữu/người tạo
   if (
-    okr.code === 'OKR_09' ||
     okr.code === 'OKR_02' ||
     okr.code === 'OKR_03' ||
     okr.code === 'OKR_06' ||
@@ -425,6 +424,47 @@ export function getOkrDept(okr, departments = [], allStaffs = [], tasks = []) {
     }
   }
 
-  return '';
+    return '';
 }
 
+/**
+ * Kiểm tra xem một Mục tiêu OKR có phải do Trưởng ban (Ban Lãnh đạo) tạo hay không:
+ * Theo quy định: OKR do Trưởng ban tạo thì tất cả mọi người trong cơ quan đều có thể thấy.
+ * Ngược lại, OKR của phòng nào thì chỉ phòng đó thấy.
+ */
+export function isOkrCreatedByBanHead(okr, allStaffs = []) {
+  if (!okr) return false;
+  if (okr.createdBy === 'user_leadership_head') return true;
+  if (okr.deptId === 'ALL' || okr.deptId === 'DEP_LDB') return true;
+  if (okr.department === 'Lãnh đạo Ban') return true;
+
+  if (okr.owner) {
+    const ownerLower = okr.owner.toLowerCase();
+    if (
+      ownerLower.includes('trần đức hưng') ||
+      (ownerLower.includes('trưởng ban') && !ownerLower.includes('phó')) ||
+      ownerLower.includes('lãnh đạo ban')
+    ) {
+      return true;
+    }
+  }
+
+  if (okr.createdByName) {
+    const nameLower = okr.createdByName.toLowerCase();
+    if (
+      nameLower.includes('trần đức hưng') ||
+      (nameLower.includes('trưởng ban') && !nameLower.includes('phó'))
+    ) {
+      return true;
+    }
+  }
+
+  if (allStaffs && allStaffs.length > 0) {
+    const creator = allStaffs.find((s) => s.id === okr.createdBy || s.name === okr.owner);
+    if (creator && (isAgencyHead(creator) || creator.managedDeptId === 'ALL')) {
+      return true;
+    }
+  }
+
+  return false;
+}

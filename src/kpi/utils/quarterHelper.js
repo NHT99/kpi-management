@@ -174,7 +174,7 @@ export const getMonthOptionsForYear = (year = 2026, targetDate = new Date()) => 
 
     let tag = '';
     if (isCurrent) tag = ' (Hiện tại)';
-    else if (isPast) tag = ' (Đã qua)';
+    else if (isPast) tag = ' (Đã kết thúc)';
     else if (isFuture) tag = ' (Chưa diễn ra)';
 
     return {
@@ -285,7 +285,7 @@ export const getFullYearQuarterOptions = (targetDate = new Date()) => {
     const isFuture = q > currentQuarter;
     return {
       value: `Q${q}_${currentYear}`,
-      label: `Quý ${roman} / ${currentYear}${isCurrent ? ' (Hiện tại)' : isPast ? ' (Đã qua)' : ' (Chưa diễn ra)'}`,
+      label: `Quý ${roman} / ${currentYear}${isCurrent ? ' (Hiện tại)' : isPast ? ' (Đã kết thúc)' : ' (Chưa diễn ra)'}`,
       display: `Quý ${roman}/${currentYear}`,
       periodType: 'QUARTER',
       month: null,
@@ -773,17 +773,19 @@ export const isOKRInPeriod = (okr, targetPeriod) => {
 
   const okrNorm = normalizePeriodAndQuarter(okr.quarter || okr.period);
 
-  // Nếu chọn Quý: Khớp OKR cùng Quý hoặc OKR của các Tháng thuộc Quý
+  // Nếu chọn Quý: Khớp OKR cùng Quý hoặc OKR của các Tháng thuộc Quý, HOẶC OKR CẢ NĂM của năm đó
   if (targetNorm.isQuarter) {
     if (okrNorm.year !== targetNorm.year) return false;
+    if (okrNorm.isYear) return true;
     if (okrNorm.isQuarter && okrNorm.quarter === targetNorm.quarter) return true;
     if (okrNorm.isMonth && okrNorm.quarter === targetNorm.quarter) return true;
     return false;
   }
 
-  // Nếu chọn Tháng: Khớp OKR của Tháng đó HOẶC OKR của Quý chứa tháng đó
+  // Nếu chọn Tháng: Khớp OKR của Tháng đó HOẶC OKR của Quý chứa tháng đó, HOẶC OKR CẢ NĂM của năm đó
   if (targetNorm.isMonth) {
     if (okrNorm.year !== targetNorm.year) return false;
+    if (okrNorm.isYear) return true;
     if (okrNorm.isMonth && okrNorm.month === targetNorm.month) return true;
     if (okrNorm.isQuarter && okrNorm.quarter === targetNorm.quarter) return true;
     return false;

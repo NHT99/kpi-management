@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -60,19 +60,65 @@ export default function VTVLTab() {
   const [deleteDialog, setDeleteDialog] = useState({ open: false, item: null });
   const [filePreviewDialog, setFilePreviewDialog] = useState({ open: false, item: null });
 
+  const getDeptCode = (deptId) => {
+    const dept = departments.find((d) => d.id === deptId);
+    if (dept?.code) return dept.code.toUpperCase();
+    if (!deptId) return 'BAN';
+    return deptId.replace(/^DEP_|^dept_/i, '').toUpperCase();
+  };
+
+  const generateVtvlCode = (deptId, list = vtvls) => {
+    const deptCode = getDeptCode(deptId);
+    let maxSeq = 0;
+    const escapedDeptCode = deptCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^VTVL-${escapedDeptCode}-(\\d+)$`, 'i');
+
+    list.forEach((v) => {
+      if (v.code) {
+        const match = v.code.match(regex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (!isNaN(num) && num > maxSeq) {
+            maxSeq = num;
+          }
+        }
+      }
+    });
+
+    const nextSeq = String(maxSeq + 1).padStart(2, '0');
+    return `VTVL-${deptCode}-${nextSeq}`;
+  };
+
   // Form input states
   const [formData, setFormData] = useState({
     code: '',
     title: '',
-    deptId: 'dept_tccb',
+    deptId: departments[0]?.id || 'DEP_TCCB',
     group: VTVL_GROUPS[1],
     description: '',
     status: 'PENDING', // Default pending for new VTVL
     documentUrl: 'QuyetDinh_PheDuyet_VTVL_2026.pdf',
   });
 
-  // Filtered VTVLs
-  const sortedVtvls = [...vtvls].sort((a, b) => (b.id || '').localeCompare(a.id || '', undefined, { numeric: true, sensitivity: 'base' }));
+  // Highlight ID for newly created VTVL
+  const [newlyCreatedId, setNewlyCreatedId] = useState(null);
+
+  // Filtered VTVLs: Sắp xếp VTVL mới tạo (dựa theo createdAt hoặc timestamp trong ID) luôn nổi lên ĐẦU danh sách
+  const sortedVtvls = useMemo(() => {
+    return [...vtvls].sort((a, b) => {
+      const getTimestamp = (item) => {
+        if (item.createdAt) return Number(item.createdAt);
+        const match = (item.id || '').match(/vtvl_(\d+)/);
+        if (match) return Number(match[1]);
+        return 0;
+      };
+      const timeA = getTimestamp(a);
+      const timeB = getTimestamp(b);
+      if (timeA !== timeB) return timeB - timeA;
+      return 0; // Giữ nguyên thứ tự ban đầu cho các VTVL mặc định
+    });
+  }, [vtvls]);
+
   const filteredVtvls = sortedVtvls.filter((v) => {
     const matchDept = selectedDept === 'ALL' || v.deptId === selectedDept;
     const matchStatus =
@@ -96,10 +142,12 @@ export default function VTVLTab() {
   };
 
   const handleOpenAdd = () => {
+    const defaultDept = departments[0]?.id || 'DEP_TCCB';
+    const newCode = generateVtvlCode(defaultDept);
     setFormData({
-      code: `VTVL-NEW-${Math.floor(100 + Math.random() * 900)}`,
+      code: newCode,
       title: '',
-      deptId: departments[0]?.id || 'dept_tccb',
+      deptId: defaultDept,
       group: VTVL_GROUPS[1],
       description: '',
       status: 'PENDING',
@@ -139,11 +187,29 @@ export default function VTVLTab() {
       );
       showToast(`Đã cập nhật VTVL "${formData.title}" thành công!`, 'success');
     } else {
+      const newId = `vtvl_${Date.now()}`;
       const newItem = {
-        id: `vtvl_${Date.now()}`,
+        id: newId,
+        createdAt: Date.now(),
         ...formData,
       };
       setVtvls((prev) => [newItem, ...prev]);
+      setNewlyCreatedId(newId);
+      setPage(0); // Nhảy về trang đầu tiên để người dùng thấy ngay
+
+      // Nếu đang lọc phòng ban hoặc trạng thái khác, mở rộng bộ lọc để hiển thị VTVL vừa tạo
+      if (selectedDept !== 'ALL' && selectedDept !== formData.deptId) {
+        setSelectedDept('ALL');
+      }
+      if (statusFilter === 'APPROVED') {
+        setStatusFilter('ALL');
+      }
+
+      // Tắt hiệu ứng phát sáng sau 3.5 giây
+      setTimeout(() => {
+        setNewlyCreatedId(null);
+      }, 3500);
+
       logAction(
         'Thêm mới VTVL',
         currentUser,
@@ -350,7 +416,7 @@ export default function VTVLTab() {
                 <TableCell sx={{ fontWeight: 700, minWidth: 180 }}>Phòng chuyên môn</TableCell>
                 <TableCell sx={{ fontWeight: 700, width: 130 }} align="center">Trạng thái</TableCell>
                 <TableCell sx={{ fontWeight: 700, width: 150 }} align="center">Văn bản / Công văn</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 80 }} align="center">Biên chế</TableCell>
+                <TableCell sx={{ fontWeight: 700, width: 120 }} align="center">Nhân sự hiện có</TableCell>
                 <TableCell sx={{ fontWeight: 700, width: 140 }} align="center">Thao tác</TableCell>
               </TableRow>
             </TableHead>
@@ -358,10 +424,60 @@ export default function VTVLTab() {
               {paginatedVtvls.map((item) => {
                 const staffCount = getStaffCountByVTVL(item.id);
                 const isPending = item.status === 'PENDING';
+                const isNew = newlyCreatedId === item.id;
                 return (
-                  <TableRow key={item.id} hover>
+                  <TableRow
+                    key={item.id}
+                    hover
+                    sx={{
+                      transition: 'background-color 1.2s ease, box-shadow 0.5s ease',
+                      ...(isNew && {
+                        animation: 'highlightFlash 3.5s ease-out forwards',
+                        '@keyframes highlightFlash': {
+                          '0%': {
+                            backgroundColor: 'rgba(25, 118, 210, 0.35)',
+                            boxShadow: 'inset 0 0 0 2px #1976d2',
+                          },
+                          '40%': {
+                            backgroundColor: 'rgba(25, 118, 210, 0.2)',
+                            boxShadow: 'inset 0 0 0 2px #1976d2',
+                          },
+                          '75%': {
+                            backgroundColor: 'rgba(25, 118, 210, 0.08)',
+                            boxShadow: 'inset 0 0 0 1px rgba(25, 118, 210, 0.4)',
+                          },
+                          '100%': {
+                            backgroundColor: 'transparent',
+                            boxShadow: 'none',
+                          },
+                        },
+                      }),
+                    }}
+                  >
                     <TableCell>
-                      <Chip label={item.code} size="small" variant="outlined" sx={{ fontWeight: 700 }} />
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Chip
+                          label={item.code}
+                          size="small"
+                          color={isNew ? 'primary' : 'default'}
+                          variant={isNew ? 'filled' : 'outlined'}
+                          sx={{ fontWeight: 700 }}
+                        />
+                        {isNew && (
+                          <Chip
+                            label="Mới tạo"
+                            size="small"
+                            color="primary"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              fontWeight: 700,
+                              bgcolor: '#1976d2',
+                              color: '#fff',
+                            }}
+                          />
+                        )}
+                      </Stack>
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -407,7 +523,13 @@ export default function VTVLTab() {
                       </Button>
                     </TableCell>
                     <TableCell align="center">
-                      <Chip label={staffCount} size="small" color={staffCount > 0 ? 'success' : 'default'} sx={{ fontWeight: 700 }} />
+                      <Chip
+                        label={`${staffCount} cán bộ`}
+                        size="small"
+                        color={staffCount > 0 ? 'success' : 'default'}
+                        variant={staffCount > 0 ? 'filled' : 'outlined'}
+                        sx={{ fontWeight: 700, fontSize: '0.75rem' }}
+                      />
                     </TableCell>
                     <TableCell align="center">
                       <Stack direction="row" spacing={0.5} justifyContent="center">
@@ -501,7 +623,14 @@ export default function VTVLTab() {
             label="Phòng chuyên môn trực thuộc"
             InputLabelProps={{ shrink: true }}
             value={formData.deptId}
-            onChange={(e) => setFormData({ ...formData, deptId: e.target.value })}
+            onChange={(e) => {
+              const newDeptId = e.target.value;
+              setFormData((prev) => ({
+                ...prev,
+                deptId: newDeptId,
+                code: !formDialog.isEdit ? generateVtvlCode(newDeptId) : prev.code,
+              }));
+            }}
             sx={{ mb: 2 }}
           >
             {departments.map((d) => (

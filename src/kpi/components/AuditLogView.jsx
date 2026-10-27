@@ -100,7 +100,13 @@ export default function AuditLogView() {
       case 'Sửa đổi VTVL':
       case 'Cập nhật cán bộ':
       case 'Thêm mới cán bộ':
+      case 'Thêm mới phòng ban':
+      case 'Cập nhật phòng ban':
         return { color: 'primary', variant: 'filled' };
+      case 'Xóa phòng ban':
+      case 'Xóa cán bộ':
+      case 'Xóa VTVL':
+        return { color: 'error', variant: 'filled' };
       case 'Giao nhiệm vụ kỳ':
       case 'Phê duyệt đánh giá':
         return { color: 'success', variant: 'filled' };

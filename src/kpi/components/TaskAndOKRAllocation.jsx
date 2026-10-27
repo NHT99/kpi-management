@@ -47,7 +47,7 @@ import { useAuth } from '../../rbac/AuthContext';
 import { INITIAL_OKRS, INITIAL_ASSIGNED_TASKS, INITIAL_MASTER_KPIS, KPI_DATA_VERSION } from '../data/mockKPIData';
 import { INITIAL_DEPARTMENTS, INITIAL_STAFFS } from '../data/organizationData';
 import { useToast } from '../hooks/useToast';
-import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared, isAgencyHead, isDeputyBanLeader } from '../../rbac/roles';
+import { ROLES, getEffectiveManagedDeptId, isSameDept, isDeputyDeptHead, isTrueDeptHead, getDirectSupervisorForStaff, getOkrDept as getOkrDeptShared, isAgencyHead, isDeputyBanLeader, isOkrCreatedByBanHead } from '../../rbac/roles';
 import { MOCK_USERS, getAllUsers } from '../../rbac/users';
 import { logAction } from '../utils/auditLogger';
 import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
@@ -561,9 +561,11 @@ export default function TaskAndOKRAllocation() {
         ...okrFormData,
         owner: currentUser?.name || okrFormData.owner,
         createdBy: currentUser.id,
-        deptId: assignedDeptId,
+        createdByName: currentUser.name,
+        createdByRole: currentUser.role,
+        deptId: deptObj ? deptObj.id : assignedDeptId,
         department: deptObj ? deptObj.name : (currentUser?.department || ''),
-        progress: Number(okrFormData.progress),
+        progress: Number(okrFormData.progress) || 0,
       };
       setOkrs([...okrs, newOkr]);
       logAction('Tạo OKR', currentUser, `Tạo mới Mục tiêu OKR: ${newOkr.code} - ${newOkr.title}`, 'Quản lý OKR & Giao việc');
@@ -822,25 +824,37 @@ export default function TaskAndOKRAllocation() {
   // Filtering OKRs
   const filteredOkrs = [...okrs].sort(sortByNewest).filter((o) => {
     // 0. Phân quyền hiển thị OKR:
-    // - Trưởng ban (effectiveManagedDept === 'ALL') & Admin: Xem toàn bộ OKR
-    // - Phó Trưởng ban (effectiveManagedDept !== 'ALL'): Chỉ xem OKR của phòng mình phụ trách
-    // - Trưởng phòng (DEPT_HEAD): Chỉ xem OKR của phòng mình
-    const okrDept = getOkrDept(o);
+    // - OKR tạo bởi Trưởng ban (Ban Lãnh đạo) -> TẤT CẢ MỌI NGƯỜI ĐỀU CÓ THỂ THẤY
+    // - OKR của phòng nào -> CHỈ CÁN BỘ PHÒNG ĐÓ THẤY (Trưởng phòng, Phó phòng, Chuyên viên)
+    // - Trưởng ban & Admin -> Xem toàn bộ OKR
+    // - Phó Trưởng ban -> Xem OKR phòng mình phụ trách + OKR của Trưởng ban
+    const isBanHeadOkr = isOkrCreatedByBanHead(o, allAssignees);
 
-    if (isDeptHead) {
-      const myDept = currentUser.deptId || currentUser.department;
-      const isMyDept =
-        (myDept && isSameDept(okrDept, myDept, departments)) ||
-        (o.createdBy && o.createdBy === currentUser.id) ||
-        (o.owner && currentUser.name && o.owner.includes(currentUser.name));
-      if (!isMyDept) return false;
-    } else if (isBanLeader) {
-      if (effectiveManagedDept !== 'ALL') {
-        const isManagedDept =
-          (effectiveManagedDept && isSameDept(okrDept, effectiveManagedDept, departments)) ||
+    if (!isBanHeadOkr) {
+      const okrDept = getOkrDept(o);
+      const creatorStaff = allAssignees.find((s) => s.id === o.createdBy || s.name === o.owner);
+
+      if (isDeptHead || role === ROLES.STAFF) {
+        const myDept = currentUser.deptId || currentUser.department;
+        const isMyDept =
+          (myDept && okrDept && isSameDept(okrDept, myDept, departments)) ||
+          (creatorStaff && myDept && isSameDept(creatorStaff.deptId || creatorStaff.department, myDept, departments)) ||
+          (o.deptId && myDept && isSameDept(o.deptId, myDept, departments)) ||
+          (o.department && myDept && isSameDept(o.department, myDept, departments)) ||
           (o.createdBy && o.createdBy === currentUser.id) ||
-          (effectiveManagedDept && o.owner && isSameDept(o.owner, effectiveManagedDept, departments));
-        if (!isManagedDept) return false;
+          (o.owner && currentUser.name && o.owner.includes(currentUser.name));
+
+        if (!isMyDept) return false;
+      } else if (isBanLeader) {
+        if (effectiveManagedDept !== 'ALL') {
+          const isManagedDept =
+            (effectiveManagedDept && okrDept && isSameDept(okrDept, effectiveManagedDept, departments)) ||
+            (creatorStaff && effectiveManagedDept && isSameDept(creatorStaff.deptId || creatorStaff.department, effectiveManagedDept, departments)) ||
+            (o.deptId && effectiveManagedDept && isSameDept(o.deptId, effectiveManagedDept, departments)) ||
+            (o.createdBy && o.createdBy === currentUser.id);
+
+          if (!isManagedDept) return false;
+        }
       }
     }
 
@@ -1853,7 +1867,7 @@ export default function TaskAndOKRAllocation() {
                   ...(opt.isPast && { color: 'text.disabled' }),
                 }}
               >
-                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
+                {opt.label}
               </MenuItem>
             ))}
             <ListSubheader
@@ -2223,7 +2237,7 @@ export default function TaskAndOKRAllocation() {
                   ...(opt.isPast && { color: 'text.disabled' }),
                 }}
               >
-                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
+                {opt.label}
               </MenuItem>
             ))}
           </TextField>

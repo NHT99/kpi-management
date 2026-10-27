@@ -51,6 +51,10 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
+import VerifiedRoundedIcon from '@mui/icons-material/VerifiedRounded';
+import WorkspacePremiumRoundedIcon from '@mui/icons-material/WorkspacePremiumRounded';
+import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
 
 import { useAuth } from '../../rbac/AuthContext';
 import { PERMISSIONS } from '../../rbac/permissions';
@@ -199,9 +203,11 @@ export default function PersonalKPIView() {
   // D1 (Đơn vị): Tự động tính, nếu 100% cấp dưới có finalScore >= 50đ -> D1 = 100%, ngược lại D1 = 50%
   const autoD1 = useMemo(() => {
     if (!isLeader || subordinates.length === 0) return 100;
+    const normSelected = normalizePeriodAndQuarter(selectedPeriod).periodKey;
     const allPassed = subordinates.every((sub) => {
       const evalRecord = evaluations.find(
-        (e) => (e.staffId === sub.id || e.staffName === sub.name) && e.period === selectedPeriod
+        (e) => (e.staffId === sub.id || e.staffName === sub.name) &&
+          (e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === normSelected)
       );
       if (!evalRecord) {
         // Cấp dưới chưa có hồ sơ đánh giá trong kỳ này -> đơn vị chưa đạt 100%
@@ -343,19 +349,54 @@ export default function PersonalKPIView() {
 
   const hasNoTasks = userAssignedTasks.length === 0;
 
+  // Helper: Kiểm tra xem kỳ Quý tương ứng của một kỳ/nhiệm vụ đã được nộp đánh giá hoặc đã duyệt hay chưa
+  const getQuarterLockInfo = (targetPeriodOrTask) => {
+    const rawPeriod = typeof targetPeriodOrTask === 'string'
+      ? targetPeriodOrTask
+      : (targetPeriodOrTask?.period || targetPeriodOrTask?.quarter || selectedPeriod);
+    const norm = normalizePeriodAndQuarter(rawPeriod);
+    const quarterKey = `Q${norm.quarter}_${norm.year}`;
+
+    // Tìm bản ghi đánh giá Quý tương ứng của cán bộ này
+    const qEval = evaluations.find(
+      (e) => (e.staffId === currentUser.id || e.staffName === currentUser.name) &&
+        (e.period === quarterKey || normalizePeriodAndQuarter(e.period).periodKey === quarterKey)
+    );
+    if (!qEval) {
+      return {
+        isLocked: false,
+        isApproved: false,
+        status: null,
+        quarterDisplay: `Quý ${norm.roman}/${norm.year}`,
+        quarterKey,
+      };
+    }
+
+    const isApproved = qEval.status === 'APPROVED';
+    const isSubmitted = (qEval.status === 'PENDING_DEPT_LEADER' || qEval.status === 'PENDING_BAN_LEADER' || isApproved) && qEval.status !== 'REJECTED';
+    return {
+      isLocked: isSubmitted,
+      isApproved,
+      status: qEval.status,
+      quarterDisplay: `Quý ${norm.roman}/${norm.year}`,
+      quarterKey,
+    };
+  };
+
   // Tìm hồ sơ đánh giá thật trong evaluations (chỉ hợp lệ nếu có nhiệm vụ thực tế)
   const currentPeriodEval = useMemo(() => {
     if (hasNoTasks) return null;
     return evaluations.find(
-      (e) => (e.staffId === currentUser.id || e.staffName === currentUser.name) && e.period === selectedPeriod
+      (e) => (e.staffId === currentUser.id || e.staffName === currentUser.name) &&
+        (e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === normalizePeriodAndQuarter(selectedPeriod).periodKey)
     ) || null;
   }, [evaluations, currentUser, selectedPeriod, hasNoTasks]);
 
-  const isRejected = currentPeriodEval?.status === 'REJECTED';
-  const isSubmitted = Boolean(currentPeriodEval) && !isRejected;
-  const isApproved = currentPeriodEval?.status === 'APPROVED';
-  // Đồng bộ trạng thái đã duyệt: Chỉ tính là đã duyệt nếu CÓ nhiệm vụ thực tế và hồ sơ thực sự có status === 'APPROVED'
-  const isEffectivelyApproved = Boolean(!hasNoTasks && isApproved);
+  const isRejected = !isMonth && currentPeriodEval?.status === 'REJECTED';
+  const isSubmitted = !isMonth && Boolean(currentPeriodEval) && !isRejected;
+  const isApproved = !isMonth && currentPeriodEval?.status === 'APPROVED';
+  // Đồng bộ trạng thái đã duyệt: Chỉ tính là đã duyệt nếu CÓ nhiệm vụ thực tế và hồ sơ thực sự có status === 'APPROVED' (không áp dụng cho Tháng)
+  const isEffectivelyApproved = !isMonth && Boolean(!hasNoTasks && isApproved);
 
   // Lấy kết quả 4 Quý trong năm của cán bộ để phục vụ tính Cả Năm và kiểm tra điều kiện khống chế loại
   const userQuarterlyEvals = useMemo(() => {
@@ -420,13 +461,20 @@ export default function PersonalKPIView() {
         isLeader
       );
 
-    // Nếu đã có bản đánh giá chính thức được phê duyệt, ưu tiên số liệu chính thức từ hồ sơ
-    if (currentPeriodEval?.kpiBreakdown) {
+    // Nếu đã có bản đánh giá (đã nộp hoặc đã duyệt), luôn đồng bộ và ưu tiên số liệu chính thức từ hồ sơ
+    if (currentPeriodEval) {
+      const autoScore = currentPeriodEval.autoKPIScore !== undefined
+        ? Number(currentPeriodEval.autoKPIScore)
+        : (currentPeriodEval.kpiBreakdown?.finalKPIScore ?? calculated.finalKPIScore);
+      const kpiRate = currentPeriodEval.kpiBreakdown?.kpiRate
+        ?? (autoScore !== undefined ? Math.round((autoScore / 0.7) * 10) / 10 : calculated.kpiRate);
+
       return {
         ...calculated,
-        ...currentPeriodEval.kpiBreakdown,
-        finalKPIScore: currentPeriodEval.autoKPIScore ?? currentPeriodEval.kpiBreakdown.finalKPIScore,
-        convertedTasks: calculated.convertedTasks.length > 0 ? calculated.convertedTasks : (currentPeriodEval.kpiBreakdown.convertedTasks || []),
+        ...(currentPeriodEval.kpiBreakdown || {}),
+        finalKPIScore: autoScore,
+        kpiRate,
+        convertedTasks: calculated.convertedTasks.length > 0 ? calculated.convertedTasks : (currentPeriodEval.kpiBreakdown?.convertedTasks || []),
       };
     }
 
@@ -519,8 +567,13 @@ export default function PersonalKPIView() {
       showToast('Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ!', 'warning');
       return;
     }
-    if (isPastQuarter || isQuarterInPast(task.period)) {
-      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+    const quarterLock = getQuarterLockInfo(task);
+    if (quarterLock.isApproved || isEffectivelyApproved) {
+      showToast(`Kỳ đánh giá ${quarterLock.quarterDisplay} đã được phê duyệt chính thức, không được phép chỉnh sửa tiến độ!`, 'warning');
+      return;
+    }
+    if (quarterLock.isLocked || isSubmitted) {
+      showToast(`Kỳ đánh giá ${quarterLock.quarterDisplay} đã nộp đánh giá lên cấp trên! Vui lòng chờ phê duyệt trước khi cập nhật tiếp.`, 'warning');
       return;
     }
     const today = new Date().toISOString().split('T')[0];
@@ -546,8 +599,13 @@ export default function PersonalKPIView() {
   // Lưu tiến độ task
   const handleSaveProgress = () => {
     if (!progressDialog.task) return;
-    if (isPastQuarter || isQuarterInPast(progressDialog.task.period)) {
-      showToast('Nhiệm vụ này thuộc kỳ đã kết thúc, không được phép chỉnh sửa!', 'warning');
+    const quarterLock = getQuarterLockInfo(progressDialog.task);
+    if (quarterLock.isApproved || isEffectivelyApproved) {
+      showToast(`Kỳ đánh giá ${quarterLock.quarterDisplay} đã được phê duyệt chính thức, không được phép chỉnh sửa!`, 'warning');
+      return;
+    }
+    if (quarterLock.isLocked || isSubmitted) {
+      showToast(`Kỳ đánh giá ${quarterLock.quarterDisplay} đã nộp đánh giá lên cấp trên! Không thể chỉnh sửa tiến độ.`, 'warning');
       return;
     }
     const taskId = progressDialog.task.id;
@@ -866,7 +924,15 @@ export default function PersonalKPIView() {
                   </Button>
                 </span>
               </Tooltip>
-              {isQ4 ? (
+              {isMonth ? (
+                <Chip
+                  icon={<InfoOutlinedIcon sx={{ fontSize: '16px !important' }} />}
+                  label="Chu kỳ Tháng: Tích lũy điểm vào Quý"
+                  color="primary"
+                  variant="outlined"
+                  sx={{ fontWeight: 700, borderRadius: 1.5, py: 2, px: 1, bgcolor: 'background.paper' }}
+                />
+              ) : isQ4 ? (
                 <Tooltip
                   title="Theo Hướng dẫn 05-HD/TU: Quý IV không gửi bản đánh giá riêng biệt mà tích lũy vào Cả Năm. Nhấn để chuyển sang đợt Đánh giá Cả Năm."
                   arrow
@@ -1068,9 +1134,7 @@ export default function PersonalKPIView() {
                     )}
                   </Box>
 
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                    Công thức BTCTU: {isLeader ? 'Rate = (A + B + C + D) / 4' : 'Rate = (A + B + C) / 3'} | Điểm = Math.min(70, Rate * 0.7).
-                  </Typography>
+
                 </>
               )}
             </CardContent>
@@ -1111,7 +1175,14 @@ export default function PersonalKPIView() {
                 {isYear ? 'Trạng thái Báo cáo Năm' : isMonth ? 'Trạng thái Báo cáo Tháng' : 'Trạng thái Báo cáo Quý'}
               </Typography>
               <Box sx={{ my: 1.5 }}>
-                {hasNoTasks ? (
+                {isMonth ? (
+                  <Chip
+                    label="Theo dõi tiến độ Tháng (Max 70đ)"
+                    color="primary"
+                    variant="outlined"
+                    sx={{ fontWeight: 700 }}
+                  />
+                ) : hasNoTasks ? (
                   <Chip
                     label="Chưa có dữ liệu"
                     variant="outlined"
@@ -1145,14 +1216,16 @@ export default function PersonalKPIView() {
                   />
                 ) : (
                   <Chip
-                    label={isYear ? 'Điểm Tạm tính trong Năm' : isMonth ? 'Điểm Tạm tính trong Tháng' : 'Điểm Tạm tính trong Quý'}
+                    label={isYear ? 'Điểm Tạm tính trong Năm' : 'Điểm Tạm tính trong Quý'}
                     color="info"
                     sx={{ fontWeight: 700 }}
                   />
                 )}
               </Box>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.4 }}>
-                {hasNoTasks ? (
+                {isMonth ? (
+                  'Theo Hướng dẫn 05-HD/TU: Tháng chỉ theo dõi tiến độ và chấm điểm KPI công việc thực tế (tối đa 70đ) để tích lũy cho Quý. Không xếp hạng và không gửi bản tự đánh giá theo tháng.'
+                ) : hasNoTasks ? (
                   'Kỳ này chưa phát sinh dữ liệu đánh giá do chưa có nhiệm vụ nào được giao.'
                 ) : isEffectivelyApproved ? (
                   <>
@@ -1344,7 +1417,7 @@ export default function PersonalKPIView() {
           {/* Header Title */}
           <Box sx={{ mb: 1.5 }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.3 }}>
-              Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({selectedPeriodDisplay}{selectedPeriodObj?.isCurrent ? ' - Hiện tại' : selectedPeriodObj?.isPast ? ' - Đã duyệt' : ''})
+              Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({selectedPeriodDisplay}{selectedPeriodObj?.isCurrent ? ' - Hiện tại' : selectedPeriodObj?.isPast ? (isMonth ? ' - Đã kết thúc' : ' - Đã duyệt') : ''})
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Theo dõi tiến độ, chất lượng và cập nhật khối lượng công việc thực tế theo chu kỳ Tháng
@@ -1429,15 +1502,15 @@ export default function PersonalKPIView() {
             <TableHead sx={{ bgcolor: 'background.default' }}>
               <TableRow>
                 <TableCell sx={{ fontWeight: 700 }}>Mã & Tên nhiệm vụ KPI</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Kỳ nhiệm vụ</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Kỳ nhiệm vụ</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Sản phẩm đầu ra</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Chỉ tiêu QĐ</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Thực tế QĐ (A)</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Chất lượng (B)</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Tiến độ (C)</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Tiến độ (%)</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center">Trạng thái</TableCell>
-                <TableCell align="right" sx={{ fontWeight: 700 }}>Cập nhật</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Chỉ tiêu QĐ</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Thực tế QĐ (A)</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Chất lượng (B)</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Tiến độ (C)</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Tiến độ (%)</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }} align="center">Trạng thái</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700, width: 110, minWidth: 110, whiteSpace: 'nowrap', px: 1, textAlign: 'center' }}>Cập nhật</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -1472,13 +1545,6 @@ export default function PersonalKPIView() {
                             size="small"
                             variant="outlined"
                             sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
-                          />
-                          <Chip
-                            label={`Kỳ: ${getTaskPeriodDisplay(t)}`}
-                            size="small"
-                            variant="outlined"
-                            color="info"
-                            sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }}
                           />
                           {t.isBonus && (
                             <Chip
@@ -1649,44 +1715,66 @@ export default function PersonalKPIView() {
                           return <Chip label={effStatus || 'Đang tiến hành'} size="small" color="primary" sx={{ fontWeight: 600 }} />;
                         })()}
                       </TableCell>
-                      <TableCell align="right">
+                      <TableCell align="center" sx={{ width: 110, minWidth: 110, whiteSpace: 'nowrap', px: 1, textAlign: 'center', verticalAlign: 'middle' }}>
                         {(() => {
                           const isPending = t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt';
                           const isRejected = t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối';
-                          const disabled = !canUpdate || isApproved || isPending || isRejected;
+                          const quarterLock = getQuarterLockInfo(t);
+                          const isQuarterApproved = quarterLock.isApproved || isEffectivelyApproved;
+                          const isQuarterLocked = quarterLock.isLocked || isSubmitted;
+                          const disabled = !canUpdate || isQuarterApproved || isQuarterLocked || isPending || isRejected;
                           const tooltipTitle = isRejected
                             ? 'Nhiệm vụ đã bị từ chối phê duyệt, không thể cập nhật tiến độ'
                             : isPending
                               ? 'Nhiệm vụ đang chờ cấp trên phê duyệt, chưa thể cập nhật tiến độ'
-                              : isApproved
-                                ? 'Kỳ đánh giá này đã được chốt và phê duyệt chính thức'
-                                : 'Cập nhật tiến độ & khối lượng thực tế';
+                              : isQuarterApproved
+                                ? `Kỳ đánh giá ${quarterLock.quarterDisplay} đã được chốt và phê duyệt chính thức`
+                                : isQuarterLocked
+                                  ? `Kỳ đánh giá ${quarterLock.quarterDisplay} đã nộp đánh giá lên cấp trên, đang chờ duyệt`
+                                  : 'Cập nhật tiến độ & khối lượng thực tế';
                           return (
-                            <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
-                              <Tooltip title={tooltipTitle} arrow placement="top">
-                                <span>
-                                  <IconButton
-                                    size="small"
-                                    color="primary"
-                                    disabled={disabled}
-                                    onClick={() => handleOpenProgress(t)}
-                                  >
-                                    <EditRoundedIcon fontSize="small" />
-                                  </IconButton>
-                                </span>
-                              </Tooltip>
-                              {isRejected && (
-                                <Tooltip title="Xóa đề xuất đã bị từ chối khỏi danh sách" arrow placement="top">
-                                  <IconButton
-                                    size="small"
-                                    color="error"
-                                    onClick={() => handleDeleteProposedTask(t.id)}
-                                  >
-                                    <DeleteOutlineRoundedIcon fontSize="small" />
-                                  </IconButton>
+                            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', width: '100%' }}>
+                              <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
+                                <Tooltip title={tooltipTitle} arrow placement="top">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      color="primary"
+                                      disabled={disabled}
+                                      onClick={() => handleOpenProgress(t)}
+                                      sx={{
+                                        border: '1px solid',
+                                        borderColor: disabled ? 'transparent' : 'divider',
+                                        borderRadius: 1.5,
+                                        p: 0.75,
+                                        bgcolor: disabled ? 'action.hover' : 'background.paper',
+                                        '&:hover': { bgcolor: 'action.selected' },
+                                      }}
+                                    >
+                                      <EditRoundedIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
                                 </Tooltip>
-                              )}
-                            </Stack>
+                                {isRejected && (
+                                  <Tooltip title="Xóa đề xuất đã bị từ chối khỏi danh sách" arrow placement="top">
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      onClick={() => handleDeleteProposedTask(t.id)}
+                                      sx={{
+                                        border: '1px solid',
+                                        borderColor: '#fca5a5',
+                                        borderRadius: 1.5,
+                                        p: 0.75,
+                                        bgcolor: '#fee2e2',
+                                      }}
+                                    >
+                                      <DeleteOutlineRoundedIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                )}
+                              </Stack>
+                            </Box>
                           );
                         })()}
                       </TableCell>
@@ -1857,281 +1945,559 @@ export default function PersonalKPIView() {
         onClose={() => setSelfEvalModalOpen(false)}
         maxWidth="md"
         fullWidth
+        PaperProps={{
+          sx: { borderRadius: 3, overflow: 'hidden' }
+        }}
       >
-        <DialogTitle sx={{ fontWeight: 700 }}>
-          {isApproved
-            ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - Đã duyệt`
-            : isSubmitted
-              ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - ${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'}`
-              : `Gửi Đánh giá ${periodLabelType} (${selectedPeriodDisplay}) & Tự chấm 30đ Phẩm chất`}
-        </DialogTitle>
-        <DialogContent dividers>
-          {/* Header Thông tin cán bộ */}
-          <Box sx={{ mb: 2.5, p: 2, bgcolor: 'action.hover', borderRadius: 2 }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
-              <Box>
-                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  {currentUser.name} — {roleDetails.name}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Cơ quan: Ban Tổ chức Tỉnh ủy • Kỳ đánh giá: {selectedPeriodDisplay}
-                </Typography>
-              </Box>
-              {isApproved ? (
-                <Chip
-                  icon={<CheckCircleRoundedIcon />}
-                  label={`Đã duyệt (${currentPeriodEval?.approverName || 'Lãnh đạo Ban'})`}
-                  color="success"
-                  size="small"
-                  sx={{ fontWeight: 700 }}
-                />
-              ) : isSubmitted ? (
-                <Chip
-                  label={currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ cấp trên duyệt'}
-                  color="info"
-                  size="small"
-                  sx={{ fontWeight: 700 }}
-                />
-              ) : null}
-            </Stack>
-          </Box>
-
-          {/* Bảng tổng hợp chốt điểm 4 Trục A, B, C, D */}
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, color: 'primary.main' }}>
-            KẾT QUẢ TÍNH ĐIỂM KPI CHÍNH THỨC:
-          </Typography>
-
-          <Paper variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 2 }}>
-            <Grid container spacing={2}>
-              <Grid size={{ xs: 6, sm: 3 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                  KHỐI LƯỢNG
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main' }}>
-                  {kpiQuarterlyResult?.rateA ?? 0}%
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {kpiQuarterlyResult?.sumActualQuyDoi ?? 0} / {kpiQuarterlyResult?.sumTargetQuyDoi ?? 0} Thực tế QĐ
-                </Typography>
-              </Grid>
-
-              <Grid size={{ xs: 6, sm: 3 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                  CHẤT LƯỢNG
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateB ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
-                  {kpiQuarterlyResult?.rateB ?? 0}%
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Quy đổi: {kpiQuarterlyResult?.sumChatLuongQuyDoi ?? 0}
-                </Typography>
-              </Grid>
-
-              <Grid size={{ xs: 6, sm: 3 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                  TIẾN ĐỘ
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateC ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
-                  {kpiQuarterlyResult?.rateC ?? 0}%
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Quy đổi: {kpiQuarterlyResult?.sumTienDoQuyDoi ?? 0}
-                </Typography>
-              </Grid>
-
-              <Grid size={{ xs: 6, sm: 3 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
-                  {isLeader ? 'TRỤC D (LÃNH ĐẠO)' : 'TRỤC D'}
-                </Typography>
-                <Typography variant="h6" sx={{ fontWeight: 800, color: isLeader ? 'secondary.main' : 'text.disabled' }}>
-                  {isLeader ? `${kpiQuarterlyResult?.rateD ?? 0}%` : 'Không áp dụng'}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {isLeader ? `(D1:${kpiQuarterlyResult?.d1 ?? 0}% D2:${kpiQuarterlyResult?.d2 ?? 0}% D3:${kpiQuarterlyResult?.d3 ?? 0}%)` : 'Chỉ áp dụng Lãnh đạo'}
-                </Typography>
-              </Grid>
-            </Grid>
-
-            <Divider sx={{ my: 1.5 }} />
-
-            <Box sx={{ width: '100%' }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75 }}>
-                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  Tỷ lệ KPI {periodLabelType}:
-                </Typography>
-                <Chip
-                  label={`${kpiQuarterlyResult?.kpiRate ?? 0}%`}
-                  color="primary"
-                  size="small"
-                  sx={{ fontWeight: 800, minWidth: 90, justifyContent: 'center' }}
-                />
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75, mt: 0.5 }}>
-                <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                  Điểm KPI chính thức của {periodLabelType} (Max 70đ):
-                </Typography>
-                <Box sx={{ minWidth: 90, textAlign: 'right' }}>
-                  <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1 }}>
-                    {kpiQuarterlyResult?.finalKPIScore ?? 0} <Typography component="span" variant="body2" color="text.secondary">/ 70 điểm</Typography>
+        {isApproved ? (
+          <>
+            {/* PHIẾU ĐÁNH GIÁ & XẾP LOẠI CHÍNH THỨC (KHI ĐÃ PHÊ DUYỆT) */}
+            <DialogTitle
+              sx={{
+                p: 2.5,
+                bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.15)' : '#f0fdf4',
+                borderBottom: '1px solid',
+                borderColor: 'success.light',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 1.5,
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <VerifiedRoundedIcon color="success" sx={{ fontSize: 32 }} />
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 800, color: 'success.dark', lineHeight: 1.2 }}>
+                    BẢN ĐÁNH GIÁ & XẾP LOẠI CHÍNH THỨC ({selectedPeriodDisplay})
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Hồ sơ đánh giá công tác cán bộ • Ban hành theo Quy chế & Quyết định chính thức
                   </Typography>
                 </Box>
-              </Box>
-            </Box>
-          </Paper>
+              </Stack>
+              <Chip
+                icon={<CheckCircleRoundedIcon sx={{ fontSize: '18px !important' }} />}
+                label={`ĐÃ PHÊ DUYỆT • ${currentPeriodEval?.approverName || 'Trần Thị Mai'}`}
+                color="success"
+                sx={{ fontWeight: 800, px: 1, py: 0.5, fontSize: '0.8rem' }}
+              />
+            </DialogTitle>
 
-          {/* Phần tự chấm 30đ phẩm chất */}
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-            TỰ CHẤM ĐIỂM PHẨM CHẤT CHÍNH TRỊ, ĐẠO ĐỨC, LỐI SỐNG & KỶ CƯƠNG (MAX 30 ĐIỂM): <strong>{selfEthicsScore} điểm</strong>
-          </Typography>
-          <Slider
-            value={selfEthicsScore}
-            onChange={(e, val) => setSelfEthicsScore(val)}
-            valueLabelDisplay="auto"
-            step={0.5}
-            min={0}
-            max={30}
-            disabled={isApproved}
-            marks={[
-              { value: 0, label: '0đ' },
-              { value: 15, label: '15đ' },
-              { value: 25, label: '25đ' },
-              { value: 30, label: '30đ' },
-            ]}
-            sx={{ mb: 3 }}
-          />
-
-          {/* Tổng hợp 4 quý trong năm khi chọn Cả Năm */}
-          {isYear && (
-            <Box sx={{ mb: 2.5, p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
-              <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', display: 'block', mb: 1 }}>
-                Tổng hợp kết quả các Quý trong năm {currentQuarterInfo.year}:
-              </Typography>
-              <Grid container spacing={1.5}>
-                {userQuarterlyEvals.map((q) => (
-                  <Grid size={{ xs: 6, sm: 3 }} key={q.quarter}>
-                    <Box
-                      sx={{
-                        p: 1.2,
-                        bgcolor: '#fff',
-                        borderRadius: 1.5,
-                        border: '1px solid',
-                        borderColor: q.totalScore !== null && q.totalScore < 50 ? 'error.main' : 'divider',
-                        textAlign: 'center',
-                      }}
-                    >
-                      <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
-                        {q.periodLabel.split('/')[0]}
-                      </Typography>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: 800,
-                          color: q.totalScore !== null ? (q.totalScore >= 50 ? 'primary.main' : 'error.main') : 'text.disabled',
-                        }}
-                      >
-                        {q.totalScore !== null ? `${q.totalScore}đ` : 'Chưa chốt'}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
-                        {q.grade ? q.grade.replace(' nhiệm vụ', '') : '---'}
-                      </Typography>
-                    </Box>
+            <DialogContent sx={{ p: 3 }}>
+              {/* Thông tin cán bộ & Quyết định */}
+              <Box
+                sx={{
+                  mb: 3,
+                  p: 2,
+                  bgcolor: 'action.hover',
+                  borderRadius: 2,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Grid container spacing={2} alignItems="center">
+                  <Grid size={{ xs: 12, sm: 6 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600 }}>
+                      Họ tên cán bộ / Chuyên viên:
+                    </Typography>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 800, color: 'text.primary' }}>
+                      {currentUser.name} — {roleDetails.name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Cơ quan: Ban Tổ chức Tỉnh ủy • Đơn vị: {currentUser.departmentName || 'Phòng chuyên môn'}
+                    </Typography>
                   </Grid>
-                ))}
-              </Grid>
-            </Box>
-          )}
 
-          {/* Tổng điểm và xếp loại dự kiến theo Hướng dẫn 05-HD/TU */}
-          {(() => {
-            const total = Math.min(100, Math.round(((kpiQuarterlyResult?.finalKPIScore ?? 0) + Number(selfEthicsScore)) * 10) / 10);
-            const grade = isYear ? determineYearlyGrade(total, userQuarterlyEvals) : determineGrade(total);
-            return (
-              <Box sx={{ mb: 3, p: 2, borderRadius: 2, bgcolor: '#f0f9ff', border: '1px solid #bae6fd', width: '100%', boxSizing: 'border-box' }}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexDirection: { xs: 'column', sm: 'row' },
-                    justifyContent: 'space-between',
-                    alignItems: { xs: 'flex-start', sm: 'center' },
-                    width: '100%',
-                    gap: 2,
-                  }}
-                >
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
-                      TỔNG ĐIỂM CUỐI CÙNG DỰ KIẾN (KPI 70đ + PHẨM CHẤT 30đ):
+                  <Grid size={{ xs: 12, sm: 6 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 600 }}>
+                      Cấp có thẩm quyền phê duyệt:
                     </Typography>
-                    <Typography variant="h5" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1.2 }}>
-                      {total.toFixed(1)} / 100 điểm
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'success.dark' }}>
+                      {currentPeriodEval?.approverName || 'Trần Thị Mai (Trưởng phòng)'}
                     </Typography>
-                  </Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Thời gian phê duyệt: {currentPeriodEval?.updatedAt ? new Date(currentPeriodEval.updatedAt).toLocaleDateString('vi-VN') : 'Kỳ I/2026'} • Trạng thái: Có hiệu lực thi hành
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </Box>
 
+              {/* TỔNG HỢP KẾT QUẢ CHÍNH THỨC HERO BANNER */}
+              {(() => {
+                const total = currentPeriodEval?.totalScore !== undefined && currentPeriodEval?.totalScore !== null
+                  ? Number(currentPeriodEval.totalScore)
+                  : Math.min(100, Math.round(((kpiQuarterlyResult?.finalKPIScore ?? 0) + Number(selfEthicsScore)) * 10) / 10);
+                const grade = currentPeriodEval?.grade || (isYear ? determineYearlyGrade(total, userQuarterlyEvals) : determineGrade(total));
+                const kpiScore = currentPeriodEval?.autoKPIScore !== undefined
+                  ? Number(currentPeriodEval.autoKPIScore)
+                  : (kpiQuarterlyResult?.finalKPIScore ?? 0);
+                const ethicsScore = currentPeriodEval?.ethicsScore !== undefined
+                  ? Number(currentPeriodEval.ethicsScore)
+                  : selfEthicsScore;
+
+                return (
                   <Box
                     sx={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: { xs: 'flex-start', sm: 'center' },
-                      justifyContent: 'center',
-                      minWidth: { sm: 220 },
+                      mb: 3,
+                      p: 2.5,
+                      borderRadius: 2.5,
+                      background: (theme) => theme.palette.mode === 'dark'
+                        ? 'linear-gradient(135deg, rgba(46, 125, 50, 0.15) 0%, rgba(2, 136, 209, 0.15) 100%)'
+                        : 'linear-gradient(135deg, #f0fdf4 0%, #f0f9ff 100%)',
+                      border: '1.5px solid',
+                      borderColor: 'success.light',
                     }}
                   >
+                    <Grid container spacing={2} alignItems="center">
+                      <Grid size={{ xs: 12, sm: 4 }}>
+                        <Box sx={{ p: 1.5, bgcolor: 'background.paper', borderRadius: 2, border: '1px solid', borderColor: 'divider', textAlign: 'center' }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                            Điểm KPI (Trục A-B-C-D)
+                          </Typography>
+                          <Typography variant="h5" sx={{ fontWeight: 800, color: 'primary.main', my: 0.5 }}>
+                            {kpiScore} <Typography component="span" variant="body2" color="text.secondary">/ 70đ</Typography>
+                          </Typography>
+                          <Chip label={`Tỷ lệ đạt: ${kpiQuarterlyResult?.kpiRate ?? 0}%`} size="small" color="primary" variant="outlined" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />
+                        </Box>
+                      </Grid>
+
+                      <Grid size={{ xs: 12, sm: 4 }}>
+                        <Box sx={{ p: 1.5, bgcolor: 'background.paper', borderRadius: 2, border: '1px solid', borderColor: 'divider', textAlign: 'center' }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                            Phẩm chất & Kỷ cương
+                          </Typography>
+                          <Typography variant="h5" sx={{ fontWeight: 800, color: 'secondary.main', my: 0.5 }}>
+                            {ethicsScore} <Typography component="span" variant="body2" color="text.secondary">/ 30đ</Typography>
+                          </Typography>
+                          <Chip label={`Tỷ lệ đạt: ${Math.round((ethicsScore / 30) * 100)}%`} size="small" color="secondary" variant="outlined" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />
+                        </Box>
+                      </Grid>
+
+                      <Grid size={{ xs: 12, sm: 4 }}>
+                        <Box sx={{ p: 1.5, bgcolor: 'background.paper', borderRadius: 2, border: '2px solid', borderColor: 'success.main', textAlign: 'center' }}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                            Tổng điểm chính thức
+                          </Typography>
+                          <Typography variant="h4" sx={{ fontWeight: 900, color: 'success.dark', my: 0.5 }}>
+                            {total.toFixed(1)} <Typography component="span" variant="caption" color="text.secondary">/ 100đ</Typography>
+                          </Typography>
+                          <Chip
+                            icon={<WorkspacePremiumRoundedIcon sx={{ fontSize: '16px !important' }} />}
+                            label={grade}
+                            color={total >= 90 ? 'success' : total >= 70 ? 'primary' : 'warning'}
+                            size="small"
+                            sx={{ fontWeight: 800, height: 22, fontSize: '0.75rem' }}
+                          />
+                        </Box>
+                      </Grid>
+                    </Grid>
+                  </Box>
+                );
+              })()}
+
+              {/* Chi tiết 4 Trục đánh giá chính thức */}
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, color: 'primary.main' }}>
+                KẾT QUẢ TÍNH ĐIỂM KPI THEO 4 TRỤC ĐÁNH GIÁ:
+              </Typography>
+              <Paper variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 2 }}>
+                <Grid container spacing={2}>
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      KHỐI LƯỢNG (A)
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main' }}>
+                      {kpiQuarterlyResult?.rateA ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {kpiQuarterlyResult?.sumActualQuyDoi ?? 0} / {kpiQuarterlyResult?.sumTargetQuyDoi ?? 0} Thực tế QĐ
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      CHẤT LƯỢNG (B)
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateB ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
+                      {kpiQuarterlyResult?.rateB ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Quy đổi: {kpiQuarterlyResult?.sumChatLuongQuyDoi ?? 0}
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      TIẾN ĐỘ (C)
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateC ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
+                      {kpiQuarterlyResult?.rateC ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Quy đổi: {kpiQuarterlyResult?.sumTienDoQuyDoi ?? 0}
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      {isLeader ? 'TRỤC D (LÃNH ĐẠO)' : 'TRỤC D'}
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: isLeader ? 'secondary.main' : 'text.disabled' }}>
+                      {isLeader ? `${kpiQuarterlyResult?.rateD ?? 0}%` : 'Không áp dụng'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {isLeader ? `(D1:${kpiQuarterlyResult?.d1 ?? 0}% D2:${kpiQuarterlyResult?.d2 ?? 0}% D3:${kpiQuarterlyResult?.d3 ?? 0}%)` : 'Chỉ áp dụng Lãnh đạo'}
+                    </Typography>
+                  </Grid>
+                </Grid>
+              </Paper>
+
+              {/* Phần ý kiến nhận xét chính thức: Tự kiểm điểm & Nhận xét của Lãnh đạo */}
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      height: '100%',
+                      borderRadius: 2,
+                      bgcolor: 'background.paper',
+                      borderLeft: '4px solid',
+                      borderLeftColor: 'primary.main',
+                    }}
+                  >
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                      <FormatQuoteRoundedIcon color="primary" sx={{ transform: 'rotate(180deg)' }} />
+                      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                        Bản tự kiểm điểm của Cán bộ
+                      </Typography>
+                    </Stack>
                     <Typography
-                      variant="caption"
-                      color="text.secondary"
+                      variant="body2"
                       sx={{
-                        fontWeight: 700,
-                        display: 'block',
-                        mb: 0.5,
-                        textAlign: { xs: 'left', sm: 'center' },
-                        width: '100%',
+                        fontStyle: 'italic',
+                        color: 'text.secondary',
+                        lineHeight: 1.6,
+                        whiteSpace: 'pre-wrap',
                       }}
                     >
-                      XẾP LOẠI:
+                      "{currentPeriodEval?.selfComment || selfComment || 'Hoàn thành tốt nhiệm vụ đợt 3/2.'}"
+                    </Typography>
+                  </Paper>
+                </Grid>
+
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      height: '100%',
+                      borderRadius: 2,
+                      bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.08)' : '#f0fdf4',
+                      borderLeft: '4px solid',
+                      borderLeftColor: 'success.main',
+                      borderColor: 'success.light',
+                    }}
+                  >
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                      <CheckCircleRoundedIcon color="success" sx={{ fontSize: 20 }} />
+                      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'success.dark' }}>
+                        Ý kiến nhận xét & Thẩm định của Lãnh đạo
+                      </Typography>
+                    </Stack>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontStyle: 'italic',
+                        color: 'text.primary',
+                        lineHeight: 1.6,
+                        mb: 1.5,
+                      }}
+                    >
+                      "{currentPeriodEval?.supervisorComment || currentPeriodEval?.councilNote || 'Cán bộ hoàn thành xuất sắc các nhiệm vụ trọng tâm được giao trong kỳ, tinh thần trách nhiệm cao, thực hiện nghiêm túc kỷ cương kỷ luật công tác.'}"
+                    </Typography>
+                    <Typography variant="caption" sx={{ fontWeight: 700, color: 'success.dark', display: 'block', textAlign: 'right' }}>
+                      — {currentPeriodEval?.approverName || 'Trần Thị Mai (Trưởng phòng)'} (Đã ký duyệt)
+                    </Typography>
+                  </Paper>
+                </Grid>
+              </Grid>
+            </DialogContent>
+
+            <DialogActions sx={{ p: 2.5, bgcolor: 'action.hover', borderTop: '1px solid', borderColor: 'divider', justifyContent: 'space-between' }}>
+              <Button
+                variant="outlined"
+                color="inherit"
+                startIcon={<PrintRoundedIcon />}
+                onClick={() => window.print()}
+                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
+              >
+                In / Xuất phiếu kết quả
+              </Button>
+              <Button
+                onClick={() => setSelfEvalModalOpen(false)}
+                variant="contained"
+                color="primary"
+                sx={{ textTransform: 'none', fontWeight: 700, px: 3, borderRadius: 2 }}
+              >
+                Đóng
+              </Button>
+            </DialogActions>
+          </>
+        ) : (
+          <>
+            <DialogTitle sx={{ fontWeight: 700 }}>
+              {isSubmitted
+                ? `Bản Đánh giá & Xếp loại (${selectedPeriodDisplay}) - ${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'}`
+                : `Gửi Đánh giá ${periodLabelType} (${selectedPeriodDisplay}) & Tự chấm 30đ Phẩm chất`}
+            </DialogTitle>
+            <DialogContent dividers>
+              {/* Header Thông tin cán bộ */}
+              <Box sx={{ mb: 2.5, p: 2, bgcolor: 'action.hover', borderRadius: 2 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
+                  <Box>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                      {currentUser.name} — {roleDetails.name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Cơ quan: Ban Tổ chức Tỉnh ủy • Kỳ đánh giá: {selectedPeriodDisplay}
+                    </Typography>
+                  </Box>
+                  {isSubmitted && (
+                    <Chip
+                      label={currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ cấp trên duyệt'}
+                      color="info"
+                      size="small"
+                      sx={{ fontWeight: 700 }}
+                    />
+                  )}
+                </Stack>
+              </Box>
+
+              {/* Bảng tổng hợp chốt điểm 4 Trục A, B, C, D */}
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1, color: 'primary.main' }}>
+                KẾT QUẢ TÍNH ĐIỂM KPI CHÍNH THỨC:
+              </Typography>
+
+              <Paper variant="outlined" sx={{ p: 2, mb: 3, borderRadius: 2 }}>
+                <Grid container spacing={2}>
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      KHỐI LƯỢNG
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main' }}>
+                      {kpiQuarterlyResult?.rateA ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {kpiQuarterlyResult?.sumActualQuyDoi ?? 0} / {kpiQuarterlyResult?.sumTargetQuyDoi ?? 0} Thực tế QĐ
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      CHẤT LƯỢNG
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateB ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
+                      {kpiQuarterlyResult?.rateB ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Quy đổi: {kpiQuarterlyResult?.sumChatLuongQuyDoi ?? 0}
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      TIẾN ĐỘ
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: (kpiQuarterlyResult?.rateC ?? 0) >= 100 ? 'success.main' : 'warning.main' }}>
+                      {kpiQuarterlyResult?.rateC ?? 0}%
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Quy đổi: {kpiQuarterlyResult?.sumTienDoQuyDoi ?? 0}
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 6, sm: 3 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                      {isLeader ? 'TRỤC D (LÃNH ĐẠO)' : 'TRỤC D'}
+                    </Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 800, color: isLeader ? 'secondary.main' : 'text.disabled' }}>
+                      {isLeader ? `${kpiQuarterlyResult?.rateD ?? 0}%` : 'Không áp dụng'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {isLeader ? `(D1:${kpiQuarterlyResult?.d1 ?? 0}% D2:${kpiQuarterlyResult?.d2 ?? 0}% D3:${kpiQuarterlyResult?.d3 ?? 0}%)` : 'Chỉ áp dụng Lãnh đạo'}
+                    </Typography>
+                  </Grid>
+                </Grid>
+
+                <Divider sx={{ my: 1.5 }} />
+
+                <Box sx={{ width: '100%' }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                      Tỷ lệ KPI {periodLabelType}:
                     </Typography>
                     <Chip
-                      label={grade}
-                      color={total >= 90 && !yearlyCapInfo.isCapped ? 'success' : total >= 70 ? 'primary' : total >= 50 ? 'warning' : 'error'}
-                      size="medium"
-                      sx={{ fontWeight: 700, height: 32, fontSize: '0.85rem' }}
+                      label={`${kpiQuarterlyResult?.kpiRate ?? 0}%`}
+                      color="primary"
+                      size="small"
+                      sx={{ fontWeight: 800, minWidth: 90, justifyContent: 'center' }}
                     />
                   </Box>
-                </Box>
 
-                {isYear && yearlyCapInfo.isCapped && (
-                  <Alert severity="warning" sx={{ mt: 1.5, py: 0.5, borderRadius: 1.5 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                      ⚠️ Khống chế loại (05-HD/TU): {yearlyCapInfo.reason} ➔ Mức xếp loại Cả Năm tối đa chỉ đạt <strong>Hoàn thành tốt nhiệm vụ</strong>.
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', py: 0.75, mt: 0.5 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                      Điểm KPI chính thức của {periodLabelType} (Max 70đ):
                     </Typography>
-                  </Alert>
-                )}
-              </Box>
-            );
-          })()}
+                    <Box sx={{ minWidth: 90, textAlign: 'right' }}>
+                      <Typography variant="h6" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1 }}>
+                        {kpiQuarterlyResult?.finalKPIScore ?? 0} <Typography component="span" variant="body2" color="text.secondary">/ 70 điểm</Typography>
+                      </Typography>
+                    </Box>
+                  </Box>
+                </Box>
+              </Paper>
 
-          <TextField
-            fullWidth
-            multiline
-            rows={3}
-            disabled={isApproved}
-            label={`Bản tự kiểm điểm, nhận xét kết quả công tác trong ${periodLabelType.toLowerCase()}`}
-            value={selfComment}
-            onChange={(e) => setSelfComment(e.target.value)}
-            placeholder={`Nêu rõ ưu điểm, tinh thần trách nhiệm và kết quả thực hiện nhiệm vụ trong ${periodLabelType.toLowerCase()}...`}
-          />
-        </DialogContent>
-        <DialogActions sx={{ p: 2 }}>
-          {isApproved ? (
-            <Button
-              onClick={() => setSelfEvalModalOpen(false)}
-              variant="contained"
-              color="primary"
-              sx={{ textTransform: 'none', fontWeight: 700 }}
-            >
-              Đóng
-            </Button>
-          ) : (
-            <>
+              {/* Phần tự chấm 30đ phẩm chất */}
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                TỰ CHẤM ĐIỂM PHẨM CHẤT CHÍNH TRỊ, ĐẠO ĐỨC, LỐI SỐNG & KỶ CƯƠNG (MAX 30 ĐIỂM):{' '}
+                <strong>{selfEthicsScore} điểm</strong>
+              </Typography>
+              <Slider
+                value={selfEthicsScore}
+                onChange={(e, val) => setSelfEthicsScore(val)}
+                valueLabelDisplay="auto"
+                step={0.5}
+                min={0}
+                max={30}
+                marks={[
+                  { value: 0, label: '0đ' },
+                  { value: 15, label: '15đ' },
+                  { value: 25, label: '25đ' },
+                  { value: 30, label: '30đ' },
+                ]}
+                sx={{ mb: 3 }}
+              />
+
+              {/* Tổng hợp 4 quý trong năm khi chọn Cả Năm */}
+              {isYear && (
+                <Box sx={{ mb: 2.5, p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', textTransform: 'uppercase', display: 'block', mb: 1 }}>
+                    Tổng hợp kết quả các Quý trong năm {currentQuarterInfo.year}:
+                  </Typography>
+                  <Grid container spacing={1.5}>
+                    {userQuarterlyEvals.map((q) => (
+                      <Grid size={{ xs: 6, sm: 3 }} key={q.quarter}>
+                        <Box
+                          sx={{
+                            p: 1.2,
+                            bgcolor: '#fff',
+                            borderRadius: 1.5,
+                            border: '1px solid',
+                            borderColor: q.totalScore !== null && q.totalScore < 50 ? 'error.main' : 'divider',
+                            textAlign: 'center',
+                          }}
+                        >
+                          <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+                            {q.periodLabel.split('/')[0]}
+                          </Typography>
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 800,
+                              color: q.totalScore !== null ? (q.totalScore >= 50 ? 'primary.main' : 'error.main') : 'text.disabled',
+                            }}
+                          >
+                            {q.totalScore !== null ? `${q.totalScore}đ` : 'Chưa chốt'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                            {q.grade ? q.grade.replace(' nhiệm vụ', '') : '---'}
+                          </Typography>
+                        </Box>
+                      </Grid>
+                    ))}
+                  </Grid>
+                </Box>
+              )}
+
+              {/* Tổng điểm và xếp loại dự kiến theo Hướng dẫn 05-HD/TU */}
+              {(() => {
+                const total = Math.min(100, Math.round(((kpiQuarterlyResult?.finalKPIScore ?? 0) + Number(selfEthicsScore)) * 10) / 10);
+                const grade = isYear ? determineYearlyGrade(total, userQuarterlyEvals) : determineGrade(total);
+                return (
+                  <Box sx={{ mb: 3, p: 2, borderRadius: 2, bgcolor: '#f0f9ff', border: '1px solid #bae6fd', width: '100%', boxSizing: 'border-box' }}>
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: { xs: 'column', sm: 'row' },
+                        justifyContent: 'space-between',
+                        alignItems: { xs: 'flex-start', sm: 'center' },
+                        width: '100%',
+                        gap: 2,
+                      }}
+                    >
+                      <Box>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                          TỔNG ĐIỂM CUỐI CÙNG DỰ KIẾN (KPI 70đ + PHẨM CHẤT 30đ):
+                        </Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 800, color: 'primary.main', lineHeight: 1.2 }}>
+                          {total.toFixed(1)} / 100 điểm
+                        </Typography>
+                      </Box>
+
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: { xs: 'flex-start', sm: 'center' },
+                          justifyContent: 'center',
+                          minWidth: { sm: 220 },
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{
+                            fontWeight: 700,
+                            display: 'block',
+                            mb: 0.5,
+                            textAlign: { xs: 'left', sm: 'center' },
+                            width: '100%',
+                          }}
+                        >
+                          XẾP LOẠI:
+                        </Typography>
+                        <Chip
+                          label={grade}
+                          color={total >= 90 && !yearlyCapInfo.isCapped ? 'success' : total >= 70 ? 'primary' : total >= 50 ? 'warning' : 'error'}
+                          size="medium"
+                          sx={{ fontWeight: 700, height: 32, fontSize: '0.85rem' }}
+                        />
+                      </Box>
+                    </Box>
+
+                    {isYear && yearlyCapInfo.isCapped && (
+                      <Alert severity="warning" sx={{ mt: 1.5, py: 0.5, borderRadius: 1.5 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                          ⚠️ Khống chế loại (05-HD/TU): {yearlyCapInfo.reason} ➔ Mức xếp loại Cả Năm tối đa chỉ đạt <strong>Hoàn thành tốt nhiệm vụ</strong>.
+                        </Typography>
+                      </Alert>
+                    )}
+                  </Box>
+                );
+              })()}
+
+              <TextField
+                fullWidth
+                multiline
+                rows={3}
+                label={`Bản tự kiểm điểm, nhận xét kết quả công tác trong ${periodLabelType.toLowerCase()}`}
+                value={selfComment}
+                onChange={(e) => setSelfComment(e.target.value)}
+                placeholder={`Nêu rõ ưu điểm, tinh thần trách nhiệm và kết quả thực hiện nhiệm vụ trong ${periodLabelType.toLowerCase()}...`}
+              />
+            </DialogContent>
+            <DialogActions sx={{ p: 2 }}>
               <Button onClick={() => setSelfEvalModalOpen(false)} color="inherit" sx={{ textTransform: 'none' }}>
                 Hủy bỏ
               </Button>
@@ -2143,9 +2509,9 @@ export default function PersonalKPIView() {
               >
                 {isSubmitted ? `Cập nhật & Gửi lại đánh giá ${periodLabelType}` : `Xác nhận Gửi đánh giá ${periodLabelType}`}
               </Button>
-            </>
-          )}
-        </DialogActions>
+            </DialogActions>
+          </>
+        )}
       </Dialog>
 
       {/* Modal: Đề xuất / Tự tạo nhiệm vụ mới */}
@@ -2458,7 +2824,7 @@ export default function PersonalKPIView() {
                   ...(opt.isPast && { color: 'text.disabled' }),
                 }}
               >
-                {opt.label} {opt.isPast ? ' (Đã kết thúc - Đã khóa)' : ''}
+                {opt.label}
               </MenuItem>
             ))}
           </TextField>
