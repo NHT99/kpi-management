@@ -463,6 +463,19 @@ export default function AgencyApprovalView() {
       });
     });
 
+    // Cập nhật trạng thái các nhiệm vụ trong kỳ sang Đã hoàn thành
+    setAssignedTasks((prevTasks) =>
+      (prevTasks || []).map((t) => {
+        if (isTaskInPeriod(t, selectedPeriod)) {
+          return {
+            ...t,
+            status: 'Đã hoàn thành',
+          };
+        }
+        return t;
+      })
+    );
+
     // 3. Ghi log kiểm toán
     logAction(
       'Phê duyệt kết quả cấp Ban',
@@ -577,6 +590,20 @@ export default function AgencyApprovalView() {
         return ev;
       });
     });
+
+    // Cập nhật trạng thái các nhiệm vụ của phòng này sang Đã hoàn thành
+    setAssignedTasks((prevTasks) =>
+      (prevTasks || []).map((t) => {
+        const isMember = targetDept.deptStaffList.some((s) => s.id === t.staffId || s.name === t.staffName);
+        if (isMember && isTaskInPeriod(t, selectedPeriod)) {
+          return {
+            ...t,
+            status: 'Đã hoàn thành',
+          };
+        }
+        return t;
+      })
+    );
 
     // 3. Log audit
     logAction(

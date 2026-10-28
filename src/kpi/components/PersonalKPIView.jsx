@@ -240,11 +240,6 @@ export default function PersonalKPIView() {
     return 1.0;
   }, [masterKPIs]);
 
-  // Helper tính trạng thái thực tế
-  const getEffectiveTaskStatus = (task) => {
-    return task.status || 'Đang tiến hành';
-  };
-
   // Tự động kiểm tra và cập nhật các nhiệm vụ 'Mới tạo' / 'Mới giao' đã qua 1 tiếng sang 'Đang tiến hành'
   useEffect(() => {
     const checkTasks = () => {
@@ -322,35 +317,10 @@ export default function PersonalKPIView() {
     );
   }, [userAssignedTasks]);
 
-  // Bộ lọc trạng thái bảng nhiệm vụ
-  const [taskStatusFilter, setTaskStatusFilter] = useState('ALL');
-
-  const inProgressTasksCount = useMemo(() => {
-    return userAssignedTasks.filter(
-      (t) => (t.status === 'Đang tiến hành' || t.status === 'Mới tạo' || t.status === 'Mới giao') && t.approvalStatus !== 'Từ chối'
-    ).length;
-  }, [userAssignedTasks]);
-
-  const pendingTasksCount = useMemo(() => {
-    return userAssignedTasks.filter(
-      (t) => (t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt') && t.approvalStatus !== 'Từ chối'
-    ).length;
-  }, [userAssignedTasks]);
-
-  const completedTasksCount = useMemo(() => {
-    return userAssignedTasks.filter((t) => t.status === 'Đã hoàn thành').length;
-  }, [userAssignedTasks]);
-
-  // Xóa nhiệm vụ đề xuất bị từ chối
-  const handleDeleteProposedTask = (taskId) => {
-    setAssignedTasks((prev) => prev.filter((t) => t.id !== taskId));
-    showToast('Đã xóa nhiệm vụ đề xuất bị từ chối khỏi danh sách!', 'info');
-  };
-
   const hasNoTasks = userAssignedTasks.length === 0;
 
   // Helper: Kiểm tra xem kỳ Quý tương ứng của một kỳ/nhiệm vụ đã được nộp đánh giá hoặc đã duyệt hay chưa
-  const getQuarterLockInfo = (targetPeriodOrTask) => {
+  const getQuarterLockInfo = useCallback((targetPeriodOrTask) => {
     const rawPeriod = typeof targetPeriodOrTask === 'string'
       ? targetPeriodOrTask
       : (targetPeriodOrTask?.period || targetPeriodOrTask?.quarter || selectedPeriod);
@@ -381,7 +351,7 @@ export default function PersonalKPIView() {
       quarterDisplay: `Quý ${norm.roman}/${norm.year}`,
       quarterKey,
     };
-  };
+  }, [evaluations, currentUser, selectedPeriod]);
 
   // Tìm hồ sơ đánh giá thật trong evaluations (chỉ hợp lệ nếu có nhiệm vụ thực tế)
   const currentPeriodEval = useMemo(() => {
@@ -425,6 +395,81 @@ export default function PersonalKPIView() {
   } else if (isSubmitted) {
     dynamicSubmitButtonLabel = `Đã gửi đánh giá (${currentPeriodEval?.status === 'PENDING_BAN_LEADER' ? 'Chờ Ban duyệt' : 'Chờ duyệt'})`;
   }
+
+  // Helper tính trạng thái thực tế của nhiệm vụ (đồng bộ động theo kết quả phê duyệt và tiến độ)
+  const getEffectiveTaskStatus = useCallback((task) => {
+    if (!task) return 'Đang tiến hành';
+    if (task.approvalStatus === 'Từ chối' || task.status === 'Đã từ chối' || task.status === 'Từ chối') {
+      return 'Đã từ chối';
+    }
+
+    // 1. Kiểm tra nếu kỳ đánh giá Quý chứa nhiệm vụ này đã được phê duyệt chính thức
+    const qLock = getQuarterLockInfo(task);
+    const isQuarterApproved = qLock.isApproved || (isEffectivelyApproved && isTaskInPeriod(task, selectedPeriod));
+    if (isQuarterApproved) {
+      return 'Đã hoàn thành';
+    }
+
+    // 2. Kiểm tra nếu bản thân nhiệm vụ đã hoàn thành theo khối lượng (actual >= target)
+    if (task.status === 'Đã hoàn thành') {
+      return 'Đã hoàn thành';
+    }
+    const targetQty = Number(task.targetQty) || 1;
+    const actualQty = Number(task.actualQty) || 0;
+    if (actualQty >= targetQty && targetQty > 0) {
+      return 'Đã hoàn thành';
+    }
+
+    // 3. Nếu cán bộ đã gửi bản tự đánh giá Quý lên cấp trên, đang chờ duyệt
+    const isQuarterPending = (qLock.status === 'PENDING_DEPT_LEADER' || qLock.status === 'PENDING_BAN_LEADER') ||
+      (isSubmitted && !isRejected && isTaskInPeriod(task, selectedPeriod));
+    if (isQuarterPending) {
+      return 'Chờ duyệt';
+    }
+
+    // 4. Các trạng thái riêng biệt khác của task
+    if (task.status === 'Mới tạo' || task.status === 'Mới giao') {
+      return task.status;
+    }
+    if (task.status === 'Chờ duyệt' || task.approvalStatus === 'Chờ duyệt') {
+      return 'Chờ duyệt';
+    }
+    if (task.status === 'Chậm tiến độ') {
+      return 'Chậm tiến độ';
+    }
+
+    return task.status || 'Đang tiến hành';
+  }, [getQuarterLockInfo, isEffectivelyApproved, isSubmitted, isRejected, selectedPeriod]);
+
+  // Bộ lọc trạng thái bảng nhiệm vụ
+  const [taskStatusFilter, setTaskStatusFilter] = useState('ALL');
+
+  const inProgressTasksCount = useMemo(() => {
+    return userAssignedTasks.filter((t) => {
+      const eff = getEffectiveTaskStatus(t);
+      return (eff === 'Đang tiến hành' || eff === 'Mới tạo' || eff === 'Mới giao') && eff !== 'Đã từ chối';
+    }).length;
+  }, [userAssignedTasks, getEffectiveTaskStatus]);
+
+  const pendingTasksCount = useMemo(() => {
+    return userAssignedTasks.filter((t) => {
+      const eff = getEffectiveTaskStatus(t);
+      return eff === 'Chờ duyệt' && eff !== 'Đã từ chối';
+    }).length;
+  }, [userAssignedTasks, getEffectiveTaskStatus]);
+
+  const completedTasksCount = useMemo(() => {
+    return userAssignedTasks.filter((t) => {
+      const eff = getEffectiveTaskStatus(t);
+      return eff === 'Đã hoàn thành';
+    }).length;
+  }, [userAssignedTasks, getEffectiveTaskStatus]);
+
+  // Xóa nhiệm vụ đề xuất bị từ chối
+  const handleDeleteProposedTask = (taskId) => {
+    setAssignedTasks((prev) => prev.filter((t) => t.id !== taskId));
+    showToast('Đã xóa nhiệm vụ đề xuất bị từ chối khỏi danh sách!', 'info');
+  };
 
   // Tính toán kết quả tổng hợp KPI theo chuẩn 4 trục A, B, C, D từ nhiệm vụ THỰC TẾ
   // Tự động phân nhánh: calculateYearlyKPI (cho Cả Năm) hoặc calculateQuarterlyKPI (cho Quý)
@@ -483,30 +528,32 @@ export default function PersonalKPIView() {
 
   // Điểm KPI Tạm tính trong suốt quý / cả năm (Max 70đ)
   const totalKPIScore = kpiQuarterlyResult?.finalKPIScore ?? 0;
-  const displayTasks = kpiQuarterlyResult?.convertedTasks || kpiQuarterlyResult?.tasksDetail || [];
+  const displayTasks = useMemo(() => {
+    return kpiQuarterlyResult?.convertedTasks || kpiQuarterlyResult?.tasksDetail || [];
+  }, [kpiQuarterlyResult]);
 
   const filteredDisplayTasks = useMemo(() => {
     if (taskStatusFilter === 'ALL') return displayTasks;
     if (taskStatusFilter === 'REJECTED') {
-      return displayTasks.filter(
-        (t) => t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối'
-      );
+      return displayTasks.filter((t) => {
+        const eff = getEffectiveTaskStatus(t);
+        return eff === 'Đã từ chối' || t.approvalStatus === 'Từ chối' || t.status === 'Đã từ chối' || t.status === 'Từ chối';
+      });
     }
     if (taskStatusFilter === 'PENDING') {
-      return displayTasks.filter(
-        (t) => (t.status === 'Chờ duyệt' || t.approvalStatus === 'Chờ duyệt') && t.approvalStatus !== 'Từ chối'
-      );
+      return displayTasks.filter((t) => getEffectiveTaskStatus(t) === 'Chờ duyệt');
     }
     if (taskStatusFilter === 'IN_PROGRESS') {
-      return displayTasks.filter(
-        (t) => (t.status === 'Đang tiến hành' || t.status === 'Mới tạo' || t.status === 'Mới giao') && t.approvalStatus !== 'Từ chối'
-      );
+      return displayTasks.filter((t) => {
+        const eff = getEffectiveTaskStatus(t);
+        return eff === 'Đang tiến hành' || eff === 'Mới tạo' || eff === 'Mới giao';
+      });
     }
     if (taskStatusFilter === 'COMPLETED') {
-      return displayTasks.filter((t) => t.status === 'Đã hoàn thành');
+      return displayTasks.filter((t) => getEffectiveTaskStatus(t) === 'Đã hoàn thành');
     }
     return displayTasks;
-  }, [displayTasks, taskStatusFilter]);
+  }, [displayTasks, taskStatusFilter, getEffectiveTaskStatus]);
 
   // Self Evaluation Modal State (30đ Phẩm chất)
   const [selfEvalModalOpen, setSelfEvalModalOpen] = useState(false);
@@ -748,6 +795,19 @@ export default function PersonalKPIView() {
       const filtered = (prev || []).filter((e) => !((e.staffId === currentUser.id || e.staffName === currentUser.name) && e.period === selectedPeriod));
       return [...filtered, selfEvalRecord];
     });
+
+    // Đồng bộ cập nhật trạng thái các nhiệm vụ trong assignedTasks
+    setAssignedTasks((prevTasks) =>
+      (prevTasks || []).map((t) => {
+        if ((t.staffId === currentUser.id || t.staffName === currentUser.name) && isTaskInPeriod(t, selectedPeriod)) {
+          return {
+            ...t,
+            status: targetStatus === 'APPROVED' ? 'Đã hoàn thành' : 'Chờ duyệt',
+          };
+        }
+        return t;
+      })
+    );
 
     logAction(
       `Gửi đánh giá ${periodLabelType}`,

@@ -59,7 +59,7 @@ const { currentInfo: currentQuarterInfo, evaluationOptions: PERIOD_OPTIONS, grou
 
 export default function DepartmentEvaluationView() {
   const { currentUser, role, hasPermission } = useAuth();
-  const [assignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
+  const [assignedTasks, setAssignedTasks] = useLocalStorage('kpi_assigned_tasks', INITIAL_ASSIGNED_TASKS);
   const [staffs] = useLocalStorage('kpi_staffs', INITIAL_STAFFS);
   const [departments] = useLocalStorage('kpi_departments', INITIAL_DEPARTMENTS);
   const [evaluations, setEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
@@ -316,6 +316,19 @@ export default function DepartmentEvaluationView() {
       return [...filtered, updatedRecord];
     });
 
+    // Cập nhật trạng thái các nhiệm vụ của cán bộ này trong kỳ được duyệt sang 'Đã hoàn thành'
+    setAssignedTasks((prevTasks) =>
+      (prevTasks || []).map((t) => {
+        if ((t.staffId === row.id || t.staffName === row.name) && isTaskInPeriod(t, selectedPeriod)) {
+          return {
+            ...t,
+            status: 'Đã hoàn thành',
+          };
+        }
+        return t;
+      })
+    );
+
     logAction(
       'Phê duyệt KPI cấp dưới',
       currentUser,
@@ -348,6 +361,19 @@ export default function DepartmentEvaluationView() {
       );
       return [...filtered, updatedRecord];
     });
+
+    // Khi từ chối bản tự đánh giá, đưa các nhiệm vụ về 'Đang tiến hành' để cán bộ tiếp tục hoàn thiện
+    setAssignedTasks((prevTasks) =>
+      (prevTasks || []).map((t) => {
+        if ((t.staffId === row.id || t.staffName === row.name) && isTaskInPeriod(t, selectedPeriod)) {
+          return {
+            ...t,
+            status: 'Đang tiến hành',
+          };
+        }
+        return t;
+      })
+    );
 
     logAction(
       'Từ chối đánh giá KPI',

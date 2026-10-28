@@ -21,6 +21,7 @@ function AppTheme(props) {
             cssVarPrefix: 'template',
           },
           colorSchemes, // Recently added in v6 for building light & dark mode app, see https://mui.com/material-ui/customization/palette/#color-schemes
+          defaultColorScheme: 'light',
           typography,
           shadows,
           shape,
@@ -38,7 +39,7 @@ function AppTheme(props) {
     return <React.Fragment>{children}</React.Fragment>;
   }
   return (
-    <ThemeProvider theme={theme} disableTransitionOnChange>
+    <ThemeProvider theme={theme} defaultMode="light" modeStorageKey="template-mode" disableTransitionOnChange>
       {children}
     </ThemeProvider>
   );
