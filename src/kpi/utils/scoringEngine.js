@@ -105,12 +105,11 @@ export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null
     const effectiveLateCount = task.isObjectiveLate ? 0 : Math.max(0, Number(task.lateCount) || 0);
     const tienDoQuyDoi = Math.max(0, Math.round((actualQuyDoi - (actualQuyDoi * effectiveLateCount * 0.25)) * 100) / 100);
 
-    // Nếu nhiệm vụ đang 'Chờ duyệt' hoặc 'Đã từ chối', không cộng vào tổng chỉ tiêu/thực tế để bảo vệ điểm KPI của cán bộ
+    // Chỉ loại trừ các nhiệm vụ bị cấp trên từ chối, HOẶC nhiệm vụ tự đề xuất chưa được duyệt và chưa có khối lượng thực tế
     const isExcludedFromScoring =
-      task.status === 'Chờ duyệt' ||
-      task.approvalStatus === 'Chờ duyệt' ||
       task.status === 'Đã từ chối' ||
-      task.approvalStatus === 'Từ chối';
+      task.approvalStatus === 'Từ chối' ||
+      (Boolean(task.isSelfAssigned) && task.approvalStatus === 'Chờ duyệt' && actualQuyDoi === 0);
     if (!isExcludedFromScoring) {
       sumTargetQuyDoi += targetQuyDoi;
       sumActualQuyDoi += actualQuyDoi;
@@ -151,17 +150,25 @@ export function calculateQuarterlyKPI(tasksOfQuarter = [], leadershipData = null
       d1 = Number(leadershipData.d1);
     } else if (leadershipData?.subordinates && Array.isArray(leadershipData.subordinates) && leadershipData.subordinates.length > 0) {
       // Tự động tính, nếu có cấp dưới chưa đạt >= 50đ -> D1 = 50%, ngược lại D1 = 100%
-      const hasFailedStaff = leadershipData.subordinates.some((sub) => {
-        const score = sub.totalScore !== undefined
-          ? sub.totalScore
-          : sub.finalScore !== undefined
-          ? sub.finalScore
-          : sub.score !== undefined
-          ? sub.score
-          : null;
-        return score === null || score < 50;
-      });
-      d1 = hasFailedStaff ? 50 : 100;
+      // Chỉ tính các cán bộ cấp dưới có nhiệm vụ hoặc có điểm đánh giá trong kỳ (loại trừ người không có việc)
+      const activeSubs = leadershipData.subordinates.filter(
+        (sub) => sub.hasTasks || (sub.taskCount !== undefined && sub.taskCount > 0) || sub.totalScore !== undefined || sub.score !== undefined
+      );
+      if (activeSubs.length === 0) {
+        d1 = 100;
+      } else {
+        const hasFailedStaff = activeSubs.some((sub) => {
+          const score = sub.totalScore !== undefined
+            ? sub.totalScore
+            : sub.finalScore !== undefined
+            ? sub.finalScore
+            : sub.score !== undefined
+            ? sub.score
+            : null;
+          return score === null || score < 50;
+        });
+        d1 = hasFailedStaff ? 50 : 100;
+      }
     }
 
     // D2 (Triển khai): Lấy từ input chọn lựa của Lãnh đạo (100% hoặc 50%)
@@ -355,12 +362,11 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
     const effectiveLateCount = isObjectiveLate ? 0 : lateCount;
     const tienDoQuyDoi = Math.max(0, actualQuyDoi - actualQuyDoi * effectiveLateCount * 0.25);
 
-    // Nếu nhiệm vụ đang 'Chờ duyệt' hoặc 'Đã từ chối', không cộng vào tổng tính điểm
+    // Chỉ loại trừ các nhiệm vụ bị cấp trên từ chối, HOẶC nhiệm vụ tự đề xuất chưa được duyệt và chưa có khối lượng thực tế
     const isExcludedFromScoring =
-      task.status === 'Chờ duyệt' ||
-      task.approvalStatus === 'Chờ duyệt' ||
       task.status === 'Đã từ chối' ||
-      task.approvalStatus === 'Từ chối';
+      task.approvalStatus === 'Từ chối' ||
+      (Boolean(task.isSelfAssigned) && task.approvalStatus === 'Chờ duyệt' && actualQuyDoi === 0);
     if (!isExcludedFromScoring) {
       sumTargetQuyDoi += targetQuyDoi;
       sumActualQuyDoi += actualQuyDoi;
@@ -400,17 +406,24 @@ export function calculateYearlyKPI(allTasksOfYear = [], leadershipData = null, i
     if (leadershipData?.d1 !== undefined) {
       d1 = Number(leadershipData.d1) || 100;
     } else if (Array.isArray(leadershipData?.subordinates) && leadershipData.subordinates.length > 0) {
-      const hasFailedStaff = leadershipData.subordinates.some((sub) => {
-        const score = sub.totalScore !== undefined
-          ? sub.totalScore
-          : sub.finalScore !== undefined
-          ? sub.finalScore
-          : sub.score !== undefined
-          ? sub.score
-          : null;
-        return score === null || score < 50;
-      });
-      d1 = hasFailedStaff ? 50 : 100;
+      const activeSubs = leadershipData.subordinates.filter(
+        (sub) => sub.hasTasks || (sub.taskCount !== undefined && sub.taskCount > 0) || sub.totalScore !== undefined || sub.score !== undefined
+      );
+      if (activeSubs.length === 0) {
+        d1 = 100;
+      } else {
+        const hasFailedStaff = activeSubs.some((sub) => {
+          const score = sub.totalScore !== undefined
+            ? sub.totalScore
+            : sub.finalScore !== undefined
+            ? sub.finalScore
+            : sub.score !== undefined
+            ? sub.score
+            : null;
+          return score === null || score < 50;
+        });
+        d1 = hasFailedStaff ? 50 : 100;
+      }
     }
 
     if (leadershipData?.d2 !== undefined) {

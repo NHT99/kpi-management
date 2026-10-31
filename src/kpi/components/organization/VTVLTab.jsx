@@ -133,12 +133,21 @@ export default function VTVLTab() {
   const paginatedVtvls = filteredVtvls.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
   const getDeptName = (deptId) => {
+    if (!deptId) return 'Lãnh đạo Ban';
     const dept = departments.find((d) => d.id === deptId);
     return dept ? dept.name : 'Chưa xác định';
   };
 
   const getStaffCountByVTVL = (vtvlId) => {
-    return staffs.filter((s) => s.vtvlId === vtvlId).length;
+    return staffs.filter((s) => {
+      if (s.vtvlId === vtvlId) return true;
+      if (vtvlId === 'vtvl_ld_01' && (s.id === 'user_leadership_01' || s.username === 'long.lehoang')) return true;
+      if (vtvlId === 'vtvl_ld_02' && (s.id === 'user_leadership_02' || s.username === 'nam.nguyenhoang')) return true;
+      if (vtvlId === 'vtvl_ld_03' && (s.id === 'user_leadership_03' || s.username === 'hoa.vumai')) return true;
+      if (vtvlId === 'vtvl_ld_04' && (s.id === 'user_leadership_04' || s.username === 'tuan.hoangminh')) return true;
+      if (vtvlId === 'vtvl_ld_head' && (s.id === 'user_leadership_head' || s.username === 'hung.tranduc')) return true;
+      return false;
+    }).length;
   };
 
   const handleOpenAdd = () => {

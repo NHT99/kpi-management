@@ -37,7 +37,7 @@ export default function MenuContent({ collapsed = false }) {
     items.push({
       id: NAV_TABS.OVERVIEW,
       text: 'Tổng quan kết quả tập thể',
-      subtext: 'Dashboard tổng hợp & biểu đồ',
+      subtext: '',
       icon: <BarChartRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'primary',
     });
@@ -48,7 +48,7 @@ export default function MenuContent({ collapsed = false }) {
     items.push({
       id: NAV_TABS.ORGANIZATION,
       text: 'QL Cán bộ, VTVL & Phòng ban',
-      subtext: 'Master data tổ chức & nhân sự',
+      subtext: '',
       icon: <ApartmentRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'primary',
     });
@@ -59,7 +59,7 @@ export default function MenuContent({ collapsed = false }) {
     items.push({
       id: NAV_TABS.KPI_MANAGEMENT,
       text: 'QL Nhiệm vụ & KPI / OKR',
-      subtext: 'Ngân hàng KPI gốc & OKR',
+      subtext: '',
       icon: <MenuBookRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'success',
     });
@@ -70,7 +70,7 @@ export default function MenuContent({ collapsed = false }) {
     items.push({
       id: NAV_TABS.PERSONAL,
       text: isTrueDeptHead(currentUser) ? 'KPI Cá nhân (Trưởng phòng)' : 'KPI & Tiến độ cá nhân',
-      subtext: 'Cập nhật tiến độ & tự đánh giá',
+      subtext: '',
       icon: <AssignmentRoundedIcon sx={{ fontSize: '1.6rem' }} />,
       color: 'info',
     });

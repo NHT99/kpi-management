@@ -88,6 +88,20 @@ export const getCurrentQuarterInfo = (targetDate = new Date()) => {
 };
 
 /**
+ * Loại bỏ các hậu tố trạng thái thời gian như '(Đã kết thúc)', '(Hiện tại)', '(Chưa diễn ra)'
+ * khỏi nhãn kỳ hoặc chuỗi thông báo để dùng cho tiêu đề, thông báo, nhận xét, biên bản phê duyệt...
+ * Giữ nguyên định dạng gốc trong Dropdown lựa chọn kỳ.
+ * @param {string} str
+ * @returns {string}
+ */
+export const cleanPeriodTag = (str) => {
+  if (!str) return '';
+  return String(str)
+    .replace(/\s*(?:[-–]\s*)?\((?:Đã kết thúc|Hiện tại|Chưa diễn ra|Cả năm)\)|\s*[-–]\s*(?:Đã kết thúc|Hiện tại|Chưa diễn ra)/gi, '')
+    .trim();
+};
+
+/**
  * Kiểm tra xem một chuỗi kỳ (tháng, quý, năm) có phải là kỳ đã kết thúc trong quá khứ hay không
  * @param {string} periodStr - Chuỗi kỳ (VD: 'Tháng 9/2026', 'M9_2026', 'Quý I/2026', 'Q1_2026', 'YEAR_2025'...)
  * @param {Date|string|number} [targetDate=new Date()]
@@ -180,6 +194,7 @@ export const getMonthOptionsForYear = (year = 2026, targetDate = new Date()) => 
     return {
       value: `M${m}_${year}`,
       label: `Tháng ${m} / ${year}${tag}`,
+      cleanLabel: `Tháng ${m} / ${year}`,
       display: `Tháng ${m}/${year}`,
       periodType: 'MONTH',
       month: m,
@@ -216,6 +231,7 @@ export const getActiveAndRemainingQuarters = (targetDate = new Date()) => {
       value: `Tháng ${m}/${year}`,
       periodKey: `M${m}_${year}`,
       label: `Tháng ${m}/${year}${tag}`,
+      cleanLabel: `Tháng ${m}/${year}`,
       display: `Tháng ${m}/${year}`,
       periodType: 'MONTH',
       month: m,
@@ -239,6 +255,7 @@ export const getActiveAndRemainingQuarters = (targetDate = new Date()) => {
       value: `Quý ${roman}/${year}`,
       periodKey: `Q${q}_${year}`,
       label: `Quý ${roman}/${year}${tag}`,
+      cleanLabel: `Quý ${roman}/${year}`,
       display: `Quý ${roman}/${year}`,
       periodType: 'QUARTER',
       quarter: q,
@@ -253,6 +270,7 @@ export const getActiveAndRemainingQuarters = (targetDate = new Date()) => {
     value: `Năm ${year}`,
     periodKey: `YEAR_${year}`,
     label: `Năm ${year} (Cả năm)`,
+    cleanLabel: `Năm ${year}`,
     display: `Năm ${year}`,
     periodType: 'YEAR',
     quarter: 'ALL',
@@ -286,6 +304,7 @@ export const getFullYearQuarterOptions = (targetDate = new Date()) => {
     return {
       value: `Q${q}_${currentYear}`,
       label: `Quý ${roman} / ${currentYear}${isCurrent ? ' (Hiện tại)' : isPast ? ' (Đã kết thúc)' : ' (Chưa diễn ra)'}`,
+      cleanLabel: `Quý ${roman} / ${currentYear}`,
       display: `Quý ${roman}/${currentYear}`,
       periodType: 'QUARTER',
       month: null,
@@ -305,6 +324,7 @@ export const getFullYearQuarterOptions = (targetDate = new Date()) => {
   const yearOption = {
     value: `YEAR_${currentYear}`,
     label: `Cả năm ${currentYear}`,
+    cleanLabel: `Cả năm ${currentYear}`,
     display: `Năm ${currentYear}`,
     periodType: 'YEAR',
     month: null,
@@ -377,8 +397,15 @@ export const getEffectiveOKRStats = (okr, allTasks = []) => {
     };
   }
 
+  // Loại bỏ hoàn toàn các nhiệm vụ đã bị từ chối khỏi OKR
+  const isRejectedTask = (t) =>
+    t.approvalStatus === 'Từ chối' ||
+    t.approvalStatus === 'Đã từ chối' ||
+    t.status === 'Đã từ chối' ||
+    t.status === 'Từ chối';
+
   const linkedTasks = (allTasks || []).filter(
-    (t) => t.okrId === okr.id || t.okrId === okr.code
+    (t) => (t.okrId === okr.id || t.okrId === okr.code) && !isRejectedTask(t)
   );
 
   if (linkedTasks.length === 0) {

@@ -71,7 +71,7 @@ export const ROLE_DETAILS = {
 export function getUserRoleBadge(user) {
   if (!user) return { label: 'Chuyên viên', color: 'info' };
   const role = user.role;
-  const title = (user.title || '').toLowerCase();
+  const title = (user.title || user.vtvlTitle || '').toLowerCase();
 
   if (role === ROLES.SUPER_ADMIN) {
     return { label: 'Super Admin', color: 'secondary' };
@@ -260,10 +260,11 @@ export function isAgencyHead(user) {
 export function isDeputyBanLeader(user) {
   if (!user) return false;
   if (isAgencyHead(user)) return false;
-  const title = (user.title || '').toLowerCase();
+  const title = (user.title || user.vtvlTitle || '').toLowerCase();
+  if (title.includes('phó phòng') || title.includes('pho phong') || title.includes('phó chánh') || title.includes('pho chanh') || title.includes('chuyên viên') || title.includes('cán bộ')) return false;
   const isDeputy = title.includes('phó') || title.includes('pho');
-  const isBanLeaderTitle = isDeputy && (title.includes('trưởng ban') || title.includes('truong ban') || title.includes('lãnh đạo ban') || title.includes('bvctnb'));
-  if (user.role === ROLES.BAN_LEADER) return true;
+  const isBanLeaderTitle = isDeputy && (title.includes('trưởng ban') || title.includes('truong ban') || title.includes('lãnh đạo ban'));
+  if (user.role === ROLES.BAN_LEADER && !title.includes('phòng') && !title.includes('phong')) return true;
   return isBanLeaderTitle;
 }
 

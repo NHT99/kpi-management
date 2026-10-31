@@ -51,7 +51,6 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
-import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import VerifiedRoundedIcon from '@mui/icons-material/VerifiedRounded';
 import WorkspacePremiumRoundedIcon from '@mui/icons-material/WorkspacePremiumRounded';
 import FormatQuoteRoundedIcon from '@mui/icons-material/FormatQuoteRounded';
@@ -72,7 +71,7 @@ import {
   checkYearlyGradeCap,
 } from '../utils/scoringEngine';
 import { logAction } from '../utils/auditLogger';
-import { getFullYearQuarterOptions, isQuarterInPast, normalizePeriodAndQuarter, isTaskInPeriod, getTaskPeriodDisplay } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isQuarterInPast, normalizePeriodAndQuarter, isTaskInPeriod, getTaskPeriodDisplay, cleanPeriodTag } from '../utils/quarterHelper';
 import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 import {
   isQuarterEligibleForSeparateDecision,
@@ -89,6 +88,65 @@ export default function PersonalKPIView() {
   }, [storedTasks]);
 
   const [storedEvaluations, setStoredEvaluations] = useLocalStorage('kpi_evaluations', INITIAL_EVALUATIONS);
+
+  // Tự động khôi phục các nhiệm vụ và bản tự đánh giá bị lỗi do phiên bản trước
+  useEffect(() => {
+    // 1. Phục hồi trạng thái thực hiện của nhiệm vụ nếu bị gán nhầm 'Chờ duyệt'
+    setAssignedTasks((prevTasks) => {
+      if (!Array.isArray(prevTasks)) return prevTasks;
+      let changed = false;
+      const healed = prevTasks.map((t) => {
+        const act = Number(t.actualQty ?? t.currentValue ?? 0);
+        const tgt = Number(t.targetQty ?? 1);
+        if (t.status === 'Chờ duyệt' && t.approvalStatus !== 'Chờ duyệt' && act > 0) {
+          changed = true;
+          return { ...t, status: act >= tgt ? 'Đã hoàn thành' : 'Đang tiến hành' };
+        }
+        return t;
+      });
+      return changed ? healed : prevTasks;
+    });
+
+    // 2. Phục hồi điểm autoKPIScore = 0 trong evaluations nếu thực tế cán bộ có nhiệm vụ hoàn thành
+    setStoredEvaluations((prevEvals) => {
+      if (!Array.isArray(prevEvals) || !Array.isArray(storedTasks)) return prevEvals;
+      let changed = false;
+      const healedEvals = prevEvals.map((ev) => {
+        if (Number(ev.autoKPIScore) === 0 && ev.period) {
+          const userTasks = storedTasks.filter(
+            (t) => (t.staffId === ev.staffId || t.staffName === ev.staffName) && isTaskInPeriod(t, ev.period)
+          );
+          if (userTasks.length > 0) {
+            const hasProgress = userTasks.some((t) => (Number(t.actualQty ?? t.currentValue ?? 0)) > 0);
+            if (hasProgress) {
+              const res = calculateQuarterlyKPI(userTasks, null, false);
+              if (res.finalKPIScore > 0) {
+                changed = true;
+                const newTotal = Math.min(100, Math.round((res.finalKPIScore + (Number(ev.bossEthicsScore) || Number(ev.ethicsScore) || 0)) * 10) / 10);
+                return {
+                  ...ev,
+                  autoKPIScore: res.finalKPIScore,
+                  totalScore: newTotal,
+                  grade: determineGrade(newTotal),
+                  kpiBreakdown: {
+                    ...(ev.kpiBreakdown || {}),
+                    rateA: res.rateA,
+                    rateB: res.rateB,
+                    rateC: res.rateC,
+                    kpiRate: res.kpiRate,
+                    finalKPIScore: res.finalKPIScore,
+                  },
+                };
+              }
+            }
+          }
+        }
+        return ev;
+      });
+      return changed ? healedEvals : prevEvals;
+    });
+  }, [setAssignedTasks, setStoredEvaluations]);
+
   const evaluations = useMemo(() => {
     return storedEvaluations && Array.isArray(storedEvaluations) ? storedEvaluations : INITIAL_EVALUATIONS;
   }, [storedEvaluations]);
@@ -191,33 +249,73 @@ export default function PersonalKPIView() {
   // Lấy danh sách cấp dưới trực tiếp để tính D1
   const subordinates = useMemo(() => {
     if (!isLeader) return [];
-    if (role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER) {
-      return staffs.filter((s) => s.deptId === currentUser.deptId && s.role === ROLES.STAFF);
+    if (role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER || isTrueDeptHead(currentUser)) {
+      return allStaffs.filter((s) => {
+        if (s.id === currentUser.id) return false;
+        if (s.role === ROLES.SUPER_ADMIN || s.role === ROLES.HR_ADMIN || s.role === ROLES.BAN_LEADER) return false;
+        if (isAgencyHead(s) || isDeputyBanLeader(s)) return false;
+        return isSameDept(s.deptId || s.department, currentUser.deptId || currentUser.department, departments);
+      });
     }
     if (role === ROLES.BAN_LEADER) {
-      return staffs.filter((s) => s.id !== currentUser.id && (s.role === ROLES.DEPT_HEAD || s.role === ROLES.DEPT_LEADER));
+      if (isAgencyHead(currentUser)) {
+        return allStaffs.filter((s) => s.id !== currentUser.id && (isTrueDeptHead(s) || isDeputyBanLeader(s)));
+      }
+      const managedDept = getEffectiveManagedDeptId(currentUser, departments);
+      return allStaffs.filter((s) => {
+        if (s.id === currentUser.id) return false;
+        if (!isTrueDeptHead(s)) return false;
+        return managedDept === 'ALL' || isSameDept(s.deptId || s.department, managedDept, departments);
+      });
     }
     return [];
-  }, [isLeader, role, staffs, currentUser]);
+  }, [isLeader, role, allStaffs, currentUser, departments]);
 
-  // D1 (Đơn vị): Tự động tính, nếu 100% cấp dưới có finalScore >= 50đ -> D1 = 100%, ngược lại D1 = 50%
-  const autoD1 = useMemo(() => {
-    if (!isLeader || subordinates.length === 0) return 100;
+  // Cấp dưới thực tế có phát sinh nhiệm vụ hoặc đánh giá trong kỳ đang xét
+  // (Cán bộ mới vào hoặc chưa có nhiệm vụ trong kỳ sẽ được miễn trừ, không tính vào mẫu số D1)
+  const evaluableSubordinates = useMemo(() => {
+    if (!isLeader || subordinates.length === 0) return [];
     const normSelected = normalizePeriodAndQuarter(selectedPeriod).periodKey;
-    const allPassed = subordinates.every((sub) => {
+    return subordinates.filter((sub) => {
+      const hasTasks = (assignedTasks || []).some(
+        (t) =>
+          (t.staffId === sub.id || t.staffName === sub.name) &&
+          isTaskInPeriod(t, selectedPeriod) &&
+          t.status !== 'Đã từ chối' &&
+          t.approvalStatus !== 'Từ chối'
+      );
+      const hasEval = (evaluations || []).some(
+        (e) =>
+          (e.staffId === sub.id || e.staffName === sub.name) &&
+          (e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === normSelected)
+      );
+      return hasTasks || hasEval;
+    });
+  }, [isLeader, subordinates, assignedTasks, evaluations, selectedPeriod]);
+
+  // Danh sách cấp dưới chưa đạt (trong số những người có nhiệm vụ được giao)
+  const failedSubordinates = useMemo(() => {
+    if (!isLeader || evaluableSubordinates.length === 0) return [];
+    const normSelected = normalizePeriodAndQuarter(selectedPeriod).periodKey;
+    return evaluableSubordinates.filter((sub) => {
       const evalRecord = evaluations.find(
-        (e) => (e.staffId === sub.id || e.staffName === sub.name) &&
+        (e) =>
+          (e.staffId === sub.id || e.staffName === sub.name) &&
           (e.period === selectedPeriod || normalizePeriodAndQuarter(e.period).periodKey === normSelected)
       );
       if (!evalRecord) {
-        // Cấp dưới chưa có hồ sơ đánh giá trong kỳ này -> đơn vị chưa đạt 100%
-        return false;
+        return true; // Có nhiệm vụ nhưng chưa hoàn thành đánh giá
       }
       const score = Number(evalRecord.totalScore ?? evalRecord.autoKPIScore ?? 0);
-      return score >= 50;
+      return score < 50;
     });
-    return allPassed ? 100 : 50;
-  }, [isLeader, subordinates, evaluations, selectedPeriod]);
+  }, [isLeader, evaluableSubordinates, evaluations, selectedPeriod]);
+
+  // D1 (Đơn vị): Tự động tính, nếu 100% cấp dưới có nhiệm vụ đạt finalScore >= 50đ -> D1 = 100%, ngược lại D1 = 50%
+  const autoD1 = useMemo(() => {
+    if (!isLeader || evaluableSubordinates.length === 0) return 100;
+    return failedSubordinates.length === 0 ? 100 : 50;
+  }, [isLeader, evaluableSubordinates, failedSubordinates]);
 
   // Đồng bộ hệ số quy đổi (multiplier) với ngân hàng KPI gốc (Master KPI Catalog)
   const getTaskMultiplier = useCallback((task) => {
@@ -508,18 +606,29 @@ export default function PersonalKPIView() {
 
     // Nếu đã có bản đánh giá (đã nộp hoặc đã duyệt), luôn đồng bộ và ưu tiên số liệu chính thức từ hồ sơ
     if (currentPeriodEval) {
-      const autoScore = currentPeriodEval.autoKPIScore !== undefined
+      const isCorruptedZero = Number(currentPeriodEval.autoKPIScore) === 0 && calculated.finalKPIScore > 0;
+      const autoScore = (!isCorruptedZero && currentPeriodEval.autoKPIScore !== undefined)
         ? Number(currentPeriodEval.autoKPIScore)
         : (currentPeriodEval.kpiBreakdown?.finalKPIScore ?? calculated.finalKPIScore);
-      const kpiRate = currentPeriodEval.kpiBreakdown?.kpiRate
-        ?? (autoScore !== undefined ? Math.round((autoScore / 0.7) * 10) / 10 : calculated.kpiRate);
+      const kpiRate = (!isCorruptedZero && currentPeriodEval.kpiBreakdown?.kpiRate !== undefined && currentPeriodEval.kpiBreakdown?.kpiRate > 0)
+        ? currentPeriodEval.kpiBreakdown.kpiRate
+        : (autoScore !== undefined && autoScore > 0 ? Math.round((autoScore / 0.7) * 10) / 10 : calculated.kpiRate);
+
+      const effectiveBreakdown = isCorruptedZero ? {} : (currentPeriodEval.kpiBreakdown || {});
 
       return {
         ...calculated,
-        ...(currentPeriodEval.kpiBreakdown || {}),
+        ...effectiveBreakdown,
         finalKPIScore: autoScore,
         kpiRate,
-        convertedTasks: calculated.convertedTasks.length > 0 ? calculated.convertedTasks : (currentPeriodEval.kpiBreakdown?.convertedTasks || []),
+        sumTargetQuyDoi: calculated.sumTargetQuyDoi > 0 ? calculated.sumTargetQuyDoi : (effectiveBreakdown.sumTargetQuyDoi ?? calculated.sumTargetQuyDoi),
+        sumActualQuyDoi: calculated.sumActualQuyDoi > 0 ? calculated.sumActualQuyDoi : (effectiveBreakdown.sumActualQuyDoi ?? calculated.sumActualQuyDoi),
+        sumChatLuongQuyDoi: calculated.sumChatLuongQuyDoi > 0 ? calculated.sumChatLuongQuyDoi : (effectiveBreakdown.sumChatLuongQuyDoi ?? calculated.sumChatLuongQuyDoi),
+        sumTienDoQuyDoi: calculated.sumTienDoQuyDoi > 0 ? calculated.sumTienDoQuyDoi : (effectiveBreakdown.sumTienDoQuyDoi ?? calculated.sumTienDoQuyDoi),
+        rateA: isCorruptedZero && calculated.sumTargetQuyDoi > 0 ? calculated.rateA : (effectiveBreakdown.rateA ?? calculated.rateA),
+        rateB: isCorruptedZero && calculated.sumTargetQuyDoi > 0 ? calculated.rateB : (effectiveBreakdown.rateB ?? calculated.rateB),
+        rateC: isCorruptedZero && calculated.sumTargetQuyDoi > 0 ? calculated.rateC : (effectiveBreakdown.rateC ?? calculated.rateC),
+        convertedTasks: calculated.convertedTasks.length > 0 ? calculated.convertedTasks : (effectiveBreakdown.convertedTasks || []),
       };
     }
 
@@ -764,7 +873,11 @@ export default function PersonalKPIView() {
     if (role === ROLES.DEPT_HEAD || role === ROLES.DEPT_LEADER) {
       targetStatus = 'PENDING_BAN_LEADER';
     } else if (role === ROLES.BAN_LEADER) {
-      targetStatus = 'APPROVED';
+      if (isAgencyHead(currentUser)) {
+        targetStatus = 'APPROVED'; // Trưởng ban tự phê duyệt chính thức
+      } else {
+        targetStatus = 'PENDING_BAN_LEADER'; // Phó Trưởng ban chờ Trưởng ban ký duyệt
+      }
     }
 
     const selfEvalRecord = {
@@ -786,8 +899,15 @@ export default function PersonalKPIView() {
         d2: finalCalculated.d2,
         d3: finalCalculated.d3,
         kpiRate: finalCalculated.kpiRate,
+        finalKPIScore: finalOfficialKPIScore,
+        sumTargetQuyDoi: finalCalculated.sumTargetQuyDoi,
+        sumActualQuyDoi: finalCalculated.sumActualQuyDoi,
+        sumChatLuongQuyDoi: finalCalculated.sumChatLuongQuyDoi,
+        sumTienDoQuyDoi: finalCalculated.sumTienDoQuyDoi,
         isLeader,
       },
+      approverName: isAgencyHead(currentUser) ? 'Trưởng ban (Tự phê duyệt)' : undefined,
+      approverTitle: isAgencyHead(currentUser) ? 'Trưởng ban / Chủ tịch Hội đồng' : undefined,
       updatedAt: new Date().toISOString(),
     };
 
@@ -796,13 +916,15 @@ export default function PersonalKPIView() {
       return [...filtered, selfEvalRecord];
     });
 
-    // Đồng bộ cập nhật trạng thái các nhiệm vụ trong assignedTasks
+    // Bảo toàn trạng thái thực hiện của các nhiệm vụ trong assignedTasks
     setAssignedTasks((prevTasks) =>
       (prevTasks || []).map((t) => {
         if ((t.staffId === currentUser.id || t.staffName === currentUser.name) && isTaskInPeriod(t, selectedPeriod)) {
+          const act = Number(t.actualQty ?? t.currentValue ?? 0);
+          const tgt = Number(t.targetQty ?? 1);
           return {
             ...t,
-            status: targetStatus === 'APPROVED' ? 'Đã hoàn thành' : 'Chờ duyệt',
+            status: act >= tgt ? 'Đã hoàn thành' : (act > 0 ? 'Đang tiến hành' : t.status),
           };
         }
         return t;
@@ -826,8 +948,8 @@ export default function PersonalKPIView() {
     const targetPeriod = proposeForm.period || (selectedPeriod.startsWith('YEAR_') ? currentQuarterInfo.periodKey : selectedPeriod);
     const norm = normalizePeriodAndQuarter(targetPeriod);
 
-    if (isPastQuarter || isQuarterInPast(norm.periodKey)) {
-      showToast('Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới!', 'warning');
+    if (isQuarterInPast(norm.periodKey)) {
+      showToast('Kỳ đánh giá này đã kết thúc, không thể tự tạo hoặc đề xuất nhiệm vụ mới vào kỳ này!', 'warning');
       return;
     }
 
@@ -1371,10 +1493,17 @@ export default function PersonalKPIView() {
                     />
                   </Box>
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.4 }}>
-                    {autoD1 === 100
-                      ? `100% cán bộ cấp dưới (${subordinates.length} cán bộ) có điểm đánh giá ${periodLabelType} đạt từ 50 điểm trở lên.`
-                      : `Đơn vị có cấp dưới chưa đạt từ 50 điểm trở lên hoặc chưa hoàn tất kỳ đánh giá (${subordinates.length} cán bộ trực thuộc).`}
+                    {evaluableSubordinates.length === 0
+                      ? 'Kỳ này đơn vị chưa có cán bộ cấp dưới nào được giao nhiệm vụ.'
+                      : autoD1 === 100
+                        ? `100% cán bộ cấp dưới có nhiệm vụ (${evaluableSubordinates.length} cán bộ) đạt từ 50 điểm trở lên.`
+                        : `Đơn vị có ${failedSubordinates.length}/${evaluableSubordinates.length} cán bộ có nhiệm vụ chưa đạt từ 50 điểm trở lên hoặc chưa hoàn tất kỳ đánh giá.`}
                   </Typography>
+                  {subordinates.length > evaluableSubordinates.length && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'info.main', fontStyle: 'italic', mt: 0.5, fontSize: '0.72rem' }}>
+                      (Đã miễn trừ ${subordinates.length - evaluableSubordinates.length} cán bộ không có nhiệm vụ trong kỳ)
+                    </Typography>
+                  )}
                 </Paper>
               </Grid>
 
@@ -1477,7 +1606,7 @@ export default function PersonalKPIView() {
           {/* Header Title */}
           <Box sx={{ mb: 1.5 }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 800, lineHeight: 1.3 }}>
-              Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({selectedPeriodDisplay}{selectedPeriodObj?.isCurrent ? ' - Hiện tại' : selectedPeriodObj?.isPast ? (isMonth ? ' - Đã kết thúc' : ' - Đã duyệt') : ''})
+              Bảng Báo cáo Tiến độ & Cập nhật Khối lượng Thực tế ({cleanPeriodTag(selectedPeriodDisplay)})
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Theo dõi tiến độ, chất lượng và cập nhật khối lượng công việc thực tế theo chu kỳ Tháng
@@ -2074,7 +2203,7 @@ export default function PersonalKPIView() {
                       Cấp có thẩm quyền phê duyệt:
                     </Typography>
                     <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'success.dark' }}>
-                      {currentPeriodEval?.approverName || 'Trần Thị Mai (Trưởng phòng)'}
+                      {isAgencyHead(currentUser) ? 'Trưởng ban / Chủ tịch Hội đồng' : currentPeriodEval?.approverName || (isDeputyBanLeader(currentUser) ? 'Trưởng ban / Chủ tịch Hội đồng' : 'Trần Thị Mai (Trưởng phòng)')}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
                       Thời gian phê duyệt: {currentPeriodEval?.updatedAt ? new Date(currentPeriodEval.updatedAt).toLocaleDateString('vi-VN') : 'Kỳ I/2026'} • Trạng thái: Có hiệu lực thi hành
@@ -2214,7 +2343,7 @@ export default function PersonalKPIView() {
 
               {/* Phần ý kiến nhận xét chính thức: Tự kiểm điểm & Nhận xét của Lãnh đạo */}
               <Grid container spacing={2}>
-                <Grid size={{ xs: 12, sm: 6 }}>
+                <Grid size={{ xs: 12, sm: isAgencyHead(currentUser) ? 12 : 6 }}>
                   <Paper
                     variant="outlined"
                     sx={{
@@ -2229,7 +2358,7 @@ export default function PersonalKPIView() {
                     <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                       <FormatQuoteRoundedIcon color="primary" sx={{ transform: 'rotate(180deg)' }} />
                       <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'text.primary' }}>
-                        Bản tự kiểm điểm của Cán bộ
+                        {isAgencyHead(currentUser) ? 'Bản tự kiểm điểm của Trưởng ban (Thủ trưởng cơ quan)' : 'Bản tự kiểm điểm của Cán bộ'}
                       </Typography>
                     </Stack>
                     <Typography
@@ -2241,59 +2370,52 @@ export default function PersonalKPIView() {
                         whiteSpace: 'pre-wrap',
                       }}
                     >
-                      "{currentPeriodEval?.selfComment || selfComment || 'Hoàn thành tốt nhiệm vụ đợt 3/2.'}"
+                      "{currentPeriodEval?.selfComment || selfComment || 'Hoàn thành tốt nhiệm vụ công tác được giao theo đúng kế hoạch và chỉ tiêu.'}"
                     </Typography>
                   </Paper>
                 </Grid>
 
-                <Grid size={{ xs: 12, sm: 6 }}>
-                  <Paper
-                    variant="outlined"
-                    sx={{
-                      p: 2,
-                      height: '100%',
-                      borderRadius: 2,
-                      bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.08)' : '#f0fdf4',
-                      borderLeft: '4px solid',
-                      borderLeftColor: 'success.main',
-                      borderColor: 'success.light',
-                    }}
-                  >
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                      <CheckCircleRoundedIcon color="success" sx={{ fontSize: 20 }} />
-                      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'success.dark' }}>
-                        Ý kiến nhận xét & Thẩm định của Lãnh đạo
-                      </Typography>
-                    </Stack>
-                    <Typography
-                      variant="body2"
+                {!isAgencyHead(currentUser) && (
+                  <Grid size={{ xs: 12, sm: 6 }}>
+                    <Paper
+                      variant="outlined"
                       sx={{
-                        fontStyle: 'italic',
-                        color: 'text.primary',
-                        lineHeight: 1.6,
-                        mb: 1.5,
+                        p: 2,
+                        height: '100%',
+                        borderRadius: 2,
+                        bgcolor: (theme) => theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.08)' : '#f0fdf4',
+                        borderLeft: '4px solid',
+                        borderLeftColor: 'success.main',
+                        borderColor: 'success.light',
                       }}
                     >
-                      "{currentPeriodEval?.supervisorComment || currentPeriodEval?.councilNote || 'Cán bộ hoàn thành xuất sắc các nhiệm vụ trọng tâm được giao trong kỳ, tinh thần trách nhiệm cao, thực hiện nghiêm túc kỷ cương kỷ luật công tác.'}"
-                    </Typography>
-                    <Typography variant="caption" sx={{ fontWeight: 700, color: 'success.dark', display: 'block', textAlign: 'right' }}>
-                      — {currentPeriodEval?.approverName || 'Trần Thị Mai (Trưởng phòng)'} (Đã ký duyệt)
-                    </Typography>
-                  </Paper>
-                </Grid>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                        <CheckCircleRoundedIcon color="success" sx={{ fontSize: 20 }} />
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'success.dark' }}>
+                          Ý kiến nhận xét của cấp trên
+                        </Typography>
+                      </Stack>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          fontStyle: 'italic',
+                          color: 'text.primary',
+                          lineHeight: 1.6,
+                          mb: 1.5,
+                        }}
+                      >
+                        "{cleanPeriodTag(currentPeriodEval?.bossComment || currentPeriodEval?.supervisorComment || currentPeriodEval?.comment || currentPeriodEval?.councilNote) || 'Cán bộ hoàn thành tốt các nhiệm vụ trọng tâm được giao trong kỳ, tinh thần trách nhiệm cao, thực hiện nghiêm túc kỷ cương kỷ luật công tác.'}"
+                      </Typography>
+                      <Typography variant="caption" sx={{ fontWeight: 700, color: 'success.dark', display: 'block', textAlign: 'right' }}>
+                        — {currentPeriodEval?.approverName || 'Trần Thị Mai (Trưởng phòng)'} (Đã ký duyệt)
+                      </Typography>
+                    </Paper>
+                  </Grid>
+                )}
               </Grid>
             </DialogContent>
 
-            <DialogActions sx={{ p: 2.5, bgcolor: 'action.hover', borderTop: '1px solid', borderColor: 'divider', justifyContent: 'space-between' }}>
-              <Button
-                variant="outlined"
-                color="inherit"
-                startIcon={<PrintRoundedIcon />}
-                onClick={() => window.print()}
-                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2 }}
-              >
-                In / Xuất phiếu kết quả
-              </Button>
+            <DialogActions sx={{ p: 2.5, bgcolor: 'action.hover', borderTop: '1px solid', borderColor: 'divider', justifyContent: 'flex-end' }}>
               <Button
                 onClick={() => setSelfEvalModalOpen(false)}
                 variant="contained"

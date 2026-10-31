@@ -37,7 +37,7 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import AutoStoriesRoundedIcon from '@mui/icons-material/AutoStoriesRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 
-import { getFullYearQuarterOptions, normalizePeriodAndQuarter } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, normalizePeriodAndQuarter, cleanPeriodTag } from '../utils/quarterHelper';
 import { calculateAllStaffEvaluationsForPeriod } from '../utils/yearWorkflowHelper';
 import { isSameDept } from '../../rbac/roles';
 
@@ -93,7 +93,12 @@ export default function DocumentGeneratorModal({
   }, []);
 
   const periodLabel = useMemo(() => {
-    return normalizePeriodAndQuarter(period).display || EVALUATION_PERIODS.find((p) => p.value === period)?.label || 'Cả năm 2026';
+    return cleanPeriodTag(
+      normalizePeriodAndQuarter(period).display ||
+      EVALUATION_PERIODS.find((p) => p.value === period)?.cleanLabel ||
+      EVALUATION_PERIODS.find((p) => p.value === period)?.label ||
+      'Cả năm 2026'
+    );
   }, [period]);
 
   const isYearPeriod = Boolean(period && (period.startsWith('YEAR_') || period.includes('Năm') || period === 'YEAR_2026'));

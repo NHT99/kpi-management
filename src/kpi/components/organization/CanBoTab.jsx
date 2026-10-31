@@ -903,8 +903,35 @@ export default function CanBoTab() {
   const selectedStaffDetails = useMemo(() => {
     if (!selectedStaff) return null;
 
-    const deptObj = departments.find((d) => isSameDept(d.id, selectedStaff.deptId, departments));
-    const vtvlObj = vtvls.find((v) => v.id === selectedStaff.vtvlId);
+    let deptObj = departments.find((d) => isSameDept(d.id, selectedStaff.deptId, departments));
+    if (!deptObj && (
+      selectedStaff.department === 'Lãnh đạo Ban' ||
+      selectedStaff.role === ROLES.BAN_LEADER ||
+      isAgencyHead(selectedStaff) ||
+      isDeputyBanLeader(selectedStaff) ||
+      selectedStaff.id === 'user_leadership_head' ||
+      (typeof selectedStaff.id === 'string' && selectedStaff.id.startsWith('user_leadership_'))
+    )) {
+      deptObj = {
+        id: 'LĐB',
+        code: 'LĐB',
+        name: 'Lãnh đạo Ban',
+        description: 'Tập thể Lãnh đạo cơ quan Ban Quản lý',
+      };
+    }
+
+    let vtvlObj = vtvls.find((v) => v.id === selectedStaff.vtvlId);
+    if (!vtvlObj || (selectedStaff.vtvlId === 'vtvl_ld' && selectedStaff.id !== 'user_leadership_01')) {
+      const accurateTitle = getVTVLTitle(selectedStaff.vtvlId, selectedStaff);
+      vtvlObj = {
+        id: selectedStaff.vtvlId || 'vtvl_ld',
+        code: selectedStaff.employeeCode ? `VTVL-${selectedStaff.employeeCode}` : 'VTVL-LĐB',
+        title: accurateTitle,
+        group: 'Nhóm Lãnh đạo, quản lý',
+        description: selectedStaff.title || accurateTitle,
+      };
+    }
+
     const userAccount = allStaffs.find(
       (u) => u.id === selectedStaff.id || u.username === selectedStaff.username || u.name === selectedStaff.name
     );
@@ -961,6 +988,7 @@ export default function CanBoTab() {
   }, [selectedStaff, departments, vtvls, allStaffs, currentUser, assignedTasks, evaluations]);
 
   // Auto-sync initial staffs (updates names or adds new staff if missing from stored staffs)
+  // và tự động chuẩn hóa department string theo deptId cho mọi cán bộ
   useEffect(() => {
     setStaffs((prevStaffs) => {
       let changed = false;
@@ -978,9 +1006,56 @@ export default function CanBoTab() {
           changed = true;
         }
       });
+
+      // Tự động chuẩn hóa department theo deptId nếu có sự sai lệch
+      updated.forEach((s, idx) => {
+        if (s.deptId) {
+          const dObj = departments.find((d) => d.id === s.deptId);
+          if (dObj && s.department !== dObj.name) {
+            updated[idx] = { ...updated[idx], department: dObj.name };
+            changed = true;
+          }
+        }
+      });
+
+      if (changed) {
+        // Đồng bộ sang kpi_users và phát sự kiện cập nhật
+        try {
+          const rawUsers = localStorage.getItem('kpi_users');
+          if (rawUsers) {
+            const userList = JSON.parse(rawUsers);
+            let uChanged = false;
+            const updatedUsers = userList.map((u) => {
+              const matched = updated.find(
+                (s) =>
+                  (s.id && s.id === u.id) ||
+                  (s.employeeCode && u.employeeCode && s.employeeCode.toUpperCase() === u.employeeCode.toUpperCase()) ||
+                  (s.username && u.username && s.username.toLowerCase() === u.username.toLowerCase())
+              );
+              if (matched && (u.deptId !== matched.deptId || u.department !== matched.department)) {
+                uChanged = true;
+                return {
+                  ...u,
+                  deptId: matched.deptId,
+                  department: matched.department,
+                  title: matched.title || u.title,
+                };
+              }
+              return u;
+            });
+            if (uChanged) {
+              localStorage.setItem('kpi_users', JSON.stringify(updatedUsers));
+            }
+          }
+        } catch {
+          // ignore
+        }
+        window.dispatchEvent(new Event('kpi_staff_updated'));
+      }
+
       return changed ? updated : prevStaffs;
     });
-  }, [setStaffs]);
+  }, [setStaffs, departments]);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -1008,7 +1083,7 @@ export default function CanBoTab() {
   // Available VTVLs in the form based on selected department (Chỉ hiển thị các VTVL đã được duyệt)
   const formAvailableVtvls = vtvls.filter(
     (v) =>
-      v.deptId === formData.deptId &&
+      ((v.deptId === formData.deptId) || (!formData.deptId && !v.deptId)) &&
       (v.status === 'APPROVED' || !v.status || (formDialog.isEdit && v.id === formData.vtvlId))
   );
 
@@ -1050,14 +1125,64 @@ export default function CanBoTab() {
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const paginatedStaffs = filteredStaffs.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
-  const getDeptName = (deptId) => {
+  const getDeptName = (deptId, staff) => {
+    if (staff) {
+      if (
+        staff.department === 'Lãnh đạo Ban' ||
+        staff.role === ROLES.BAN_LEADER ||
+        isAgencyHead(staff) ||
+        isDeputyBanLeader(staff) ||
+        staff.id === 'user_leadership_head' ||
+        (typeof staff.id === 'string' && staff.id.startsWith('user_leadership_'))
+      ) {
+        return 'Lãnh đạo Ban';
+      }
+      if (staff.department && staff.department !== 'Chưa xác định') {
+        const d = departments.find((item) => item.id === staff.deptId || item.name === staff.department);
+        if (d) return d.name;
+        return staff.department;
+      }
+    }
     const dept = departments.find((d) => d.id === deptId);
     return dept ? dept.name : 'Chưa xác định';
   };
 
-  const getVTVLTitle = (vtvlId) => {
+  const getVTVLTitle = (vtvlId, staff) => {
     const v = vtvls.find((item) => item.id === vtvlId);
-    return v ? v.title : 'Chưa phân công VTVL';
+    if (v && v.title) {
+      // Nếu vtvlId là vtvl_ld chung nhưng staff là Nguyễn Hoàng Nam / Mai Hoa / Minh Tuấn, trả về title chính xác
+      if (vtvlId === 'vtvl_ld' && staff) {
+        if (staff.id === 'user_leadership_02' || staff.username === 'nam.nguyenhoang' || staff.managedDeptId === 'DEP_BV') {
+          return 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)';
+        }
+        if (staff.id === 'user_leadership_03' || staff.username === 'hoa.vumai' || staff.managedDeptId === 'DEP_TCCB') {
+          return 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)';
+        }
+        if (staff.id === 'user_leadership_04' || staff.username === 'tuan.hoangminh' || staff.managedDeptId === 'DEP_VP') {
+          return 'Phó Trưởng ban (Phụ trách Văn phòng Ban)';
+        }
+      }
+      return v.title;
+    }
+    if (staff) {
+      if (staff.id === 'user_leadership_head' || staff.username === 'hung.tranduc') {
+        return 'Trưởng ban / Chủ tịch Hội đồng';
+      }
+      if (staff.id === 'user_leadership_01' || staff.username === 'long.lehoang' || staff.managedDeptId === 'DEP_TCD') {
+        return 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)';
+      }
+      if (staff.id === 'user_leadership_02' || staff.username === 'nam.nguyenhoang' || staff.managedDeptId === 'DEP_BV') {
+        return 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)';
+      }
+      if (staff.id === 'user_leadership_03' || staff.username === 'hoa.vumai' || staff.managedDeptId === 'DEP_TCCB') {
+        return 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)';
+      }
+      if (staff.id === 'user_leadership_04' || staff.username === 'tuan.hoangminh' || staff.managedDeptId === 'DEP_VP') {
+        return 'Phó Trưởng ban (Phụ trách Văn phòng Ban)';
+      }
+      if (staff.title) return staff.title;
+    }
+    return 'Chưa phân công VTVL';
   };
 
   const handleOpenAdd = () => {
@@ -1122,21 +1247,125 @@ export default function CanBoTab() {
       return;
     }
 
+    const targetDept = departments.find((d) => d.id === formData.deptId);
+    const deptName = targetDept ? targetDept.name : (formData.deptId || 'Phòng chuyên môn');
+
     if (formDialog.isEdit && formDialog.item) {
+      const updatedStaff = {
+        ...formDialog.item,
+        ...formData,
+        department: deptName,
+        role: formDialog.item.role,
+        status: formDialog.item.status,
+        username: formDialog.item.username,
+      };
+
       setStaffs((prev) =>
-        prev.map((s) => (s.id === formDialog.item.id ? { ...s, ...formData, role: s.role, status: s.status, username: s.username } : s))
+        prev.map((s) => (s.id === formDialog.item.id ? updatedStaff : s))
       );
+
+      // 1. Cập nhật đồng bộ vào kpi_users trong localStorage
+      try {
+        const rawUsers = localStorage.getItem('kpi_users');
+        if (rawUsers) {
+          const userList = JSON.parse(rawUsers);
+          const updatedUsers = userList.map((u) => {
+            if (
+              u.id === formDialog.item.id ||
+              (formDialog.item.employeeCode && u.employeeCode && u.employeeCode.toUpperCase() === formDialog.item.employeeCode.toUpperCase()) ||
+              (formDialog.item.username && u.username && u.username.toLowerCase() === formDialog.item.username.toLowerCase())
+            ) {
+              return {
+                ...u,
+                name: formData.name,
+                employeeCode: formData.employeeCode,
+                deptId: formData.deptId,
+                department: deptName,
+                title: formData.title,
+                email: formData.email || u.email,
+                phone: formData.phone || u.phone,
+              };
+            }
+            return u;
+          });
+          localStorage.setItem('kpi_users', JSON.stringify(updatedUsers));
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2. Cập nhật kpi_auth_user trong localStorage nếu đang đăng nhập đúng cán bộ này
+      try {
+        const rawAuth = localStorage.getItem('kpi_auth_user');
+        if (rawAuth) {
+          const authUser = JSON.parse(rawAuth);
+          if (
+            authUser.id === formDialog.item.id ||
+            (formDialog.item.employeeCode && authUser.employeeCode && authUser.employeeCode.toUpperCase() === formDialog.item.employeeCode.toUpperCase()) ||
+            (formDialog.item.username && authUser.username && authUser.username.toLowerCase() === formDialog.item.username.toLowerCase())
+          ) {
+            const updatedAuth = {
+              ...authUser,
+              name: formData.name,
+              employeeCode: formData.employeeCode,
+              deptId: formData.deptId,
+              department: deptName,
+              title: formData.title,
+              email: formData.email || authUser.email,
+              phone: formData.phone || authUser.phone,
+            };
+            localStorage.setItem('kpi_auth_user', JSON.stringify(updatedAuth));
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 3. Đồng bộ lại nhiệm vụ của cán bộ này trong kpi_assigned_tasks sang phòng ban mới
+      try {
+        const rawTasks = localStorage.getItem('kpi_assigned_tasks');
+        if (rawTasks) {
+          const taskList = JSON.parse(rawTasks);
+          let taskChanged = false;
+          const updatedTasks = taskList.map((t) => {
+            if (
+              t.staffId === formDialog.item.id ||
+              t.staffName === formDialog.item.name ||
+              (formDialog.item.employeeCode && t.employeeCode === formDialog.item.employeeCode)
+            ) {
+              taskChanged = true;
+              return {
+                ...t,
+                deptId: formData.deptId,
+                staffDept: deptName,
+              };
+            }
+            return t;
+          });
+          if (taskChanged) {
+            localStorage.setItem('kpi_assigned_tasks', JSON.stringify(updatedTasks));
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 4. Bắn sự kiện đồng bộ toàn hệ thống
+      window.dispatchEvent(new Event('kpi_staff_updated'));
+      window.dispatchEvent(new Event('storage'));
+
       logAction(
         'Cập nhật cán bộ',
         currentUser,
-        `Cập nhật hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Chức vụ: ${formData.title}`,
+        `Cập nhật hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${deptName} - Chức vụ: ${formData.title}`,
         'Quản lý Cán bộ'
       );
-      showToast(`Đã cập nhật hồ sơ cán bộ "${formData.name}" thành công!`, 'success');
+      showToast(`Đã cập nhật hồ sơ cán bộ "${formData.name}" và đồng bộ phân quyền toàn hệ thống!`, 'success');
     } else {
       const newStaff = {
         id: `staff_${Date.now()}`,
         ...formData,
+        department: deptName,
         role: ROLES.STAFF,
         status: 'NO_ACCOUNT',
         username: '',
@@ -1146,7 +1375,7 @@ export default function CanBoTab() {
       logAction(
         'Thêm mới cán bộ',
         currentUser,
-        `Thêm mới hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${getDeptName(formData.deptId)} - Trạng thái: Chờ cấp tài khoản (NO_ACCOUNT)`,
+        `Thêm mới hồ sơ cán bộ "${formData.name}" (${formData.employeeCode}) - Phòng ban: ${deptName} - Trạng thái: Chờ cấp tài khoản (NO_ACCOUNT)`,
         'Quản lý Cán bộ'
       );
       showToast(`Đã thêm mới cán bộ "${formData.name}" (Trạng thái: Chờ cấp tài khoản)!`, 'success');
@@ -1316,12 +1545,22 @@ export default function CanBoTab() {
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {getDeptName(staff.deptId)}
+                        {getDeptName(staff.deptId, staff)}
                       </Typography>
+                      {staff.managedDeptId && staff.managedDeptId !== 'ALL' && (
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.72rem' }}>
+                          Phụ trách: {departments.find(d => d.id === staff.managedDeptId)?.name || (
+                            staff.managedDeptId === 'DEP_VP' ? 'Văn phòng Ban' :
+                            staff.managedDeptId === 'DEP_BV' ? 'Phòng Bảo vệ CTNB' :
+                            staff.managedDeptId === 'DEP_TCCB' ? 'Phòng Tổ chức cán bộ' :
+                            staff.managedDeptId === 'DEP_TCD' ? 'Phòng Tổ chức đảng - Đảng viên' : staff.managedDeptId
+                          )}
+                        </Typography>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {getVTVLTitle(staff.vtvlId)}
+                        {getVTVLTitle(staff.vtvlId, staff)}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         {staff.civilServantRank}
@@ -1329,7 +1568,7 @@ export default function CanBoTab() {
                     </TableCell>
                     <TableCell align="center">
                       <Chip
-                        label={staff.status === 'NO_ACCOUNT' ? 'Chờ cấp' : getUserRoleBadge({ role: staff.role, title: getVTVLTitle(staff.vtvlId) || staff.title }).label}
+                        label={staff.status === 'NO_ACCOUNT' ? 'Chờ cấp' : getUserRoleBadge({ role: staff.role, title: getVTVLTitle(staff.vtvlId, staff) || staff.title }).label}
                         color={staff.status === 'NO_ACCOUNT' ? 'default' : rDetails.color}
                         size="small"
                         sx={{ fontWeight: 700, fontSize: '0.72rem' }}
@@ -1426,10 +1665,13 @@ export default function CanBoTab() {
             fullWidth
             label="Phòng chuyên môn (Phòng ban)"
             InputLabelProps={{ shrink: true }}
-            value={formData.deptId}
+            value={formData.deptId || ''}
             onChange={(e) => handleDeptChangeInForm(e.target.value)}
             sx={{ mb: 2 }}
           >
+            <MenuItem value="">
+              <em>Lãnh đạo Ban (Khối Lãnh đạo cơ quan)</em>
+            </MenuItem>
             {departments.map((d) => (
               <MenuItem key={d.id} value={d.id}>
                 {d.name}

@@ -377,7 +377,7 @@ export default function AccountManagementView() {
     const details = ROLE_DETAILS[roleKey] || ROLE_DETAILS[ROLES.STAFF];
     return (
       <Chip
-        label={badge.label}
+        label={badge?.label || details?.shortName || 'Chuyên viên'}
         size="small"
         sx={{
           bgcolor: details.badgeBg || 'rgba(0,0,0,0.06)',

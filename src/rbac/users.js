@@ -43,6 +43,7 @@ export const MOCK_USERS = [
     department: 'Lãnh đạo Ban',
     deptId: '',
     managedDeptId: 'ALL',
+    vtvlId: 'vtvl_ld_head',
     email: 'hung.tranduc@kpi.gov.vn',
     password: 'password123',
     role: ROLES.BAN_LEADER,
@@ -61,6 +62,7 @@ export const MOCK_USERS = [
     department: 'Lãnh đạo Ban',
     deptId: '',
     managedDeptId: 'DEP_TCD',
+    vtvlId: 'vtvl_ld_01',
     email: 'long.lehoang@kpi.gov.vn',
     password: 'password123',
     role: ROLES.BAN_LEADER,
@@ -69,6 +71,63 @@ export const MOCK_USERS = [
     phone: '0903.999.888',
     employeeCode: 'LD-2018-003',
     issuedDate: '2018-03-10',
+    status: 'ACTIVE',
+  },
+  {
+    id: 'user_leadership_02',
+    name: 'Nguyễn Hoàng Nam',
+    username: 'nam.nguyenhoang',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)',
+    department: 'Lãnh đạo Ban',
+    deptId: '',
+    managedDeptId: 'DEP_BV',
+    vtvlId: 'vtvl_ld_02',
+    email: 'nam.nguyenhoang@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.BAN_LEADER,
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
+    initials: 'HN',
+    phone: '0903.666.777',
+    employeeCode: 'LD-2018-005',
+    issuedDate: '2018-05-15',
+    status: 'ACTIVE',
+  },
+  {
+    id: 'user_leadership_03',
+    name: 'Vũ Thị Mai Hoa',
+    username: 'hoa.vumai',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)',
+    department: 'Lãnh đạo Ban',
+    deptId: '',
+    managedDeptId: 'DEP_TCCB',
+    vtvlId: 'vtvl_ld_03',
+    email: 'hoa.vumai@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.BAN_LEADER,
+    avatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=150&auto=format&fit=crop&q=80',
+    initials: 'MH',
+    phone: '0903.444.555',
+    employeeCode: 'LD-2019-008',
+    issuedDate: '2019-02-20',
+    status: 'ACTIVE',
+  },
+  {
+    id: 'user_leadership_04',
+    name: 'Hoàng Minh Tuấn',
+    username: 'tuan.hoangminh',
+    title: 'Phó Trưởng ban (Phụ trách Văn phòng Ban)',
+    department: 'Lãnh đạo Ban',
+    deptId: '',
+    managedDeptId: 'DEP_VP',
+    vtvlId: 'vtvl_ld_04',
+    email: 'tuan.hoangminh@kpi.gov.vn',
+    password: 'password123',
+    role: ROLES.BAN_LEADER,
+    avatar: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=150&auto=format&fit=crop&q=80',
+    initials: 'MT',
+    phone: '0903.222.333',
+    employeeCode: 'LD-2019-012',
+    issuedDate: '2019-08-10',
     status: 'ACTIVE',
   },
   {
@@ -160,18 +219,56 @@ export function getAllUsers() {
     // ignore
   }
 
+  // Luôn đồng bộ và làm giàu dữ liệu từ kpi_staffs (Master Data nhân sự)
   try {
     const rawStaffs = localStorage.getItem('kpi_staffs');
     if (rawStaffs) {
       const parsedStaffs = JSON.parse(rawStaffs);
+      let depts = [];
+      try {
+        const rawDepts = localStorage.getItem('kpi_departments');
+        if (rawDepts) depts = JSON.parse(rawDepts);
+      } catch {
+        // ignore
+      }
+
       parsedStaffs.forEach((s) => {
-        if (s.username && !users.some((x) => x.id === s.id || x.username === s.username)) {
+        let deptName = s.department;
+        if (s.deptId) {
+          const d = depts.find((item) => item.id === s.deptId);
+          if (d) deptName = d.name;
+          else if (s.deptId === 'DEP_BV') deptName = 'Phòng Bảo vệ chính trị nội bộ';
+          else if (s.deptId === 'DEP_TCD') deptName = 'Phòng Tổ chức đảng - Đảng viên';
+          else if (s.deptId === 'DEP_TCCB') deptName = 'Phòng Tổ chức cán bộ';
+          else if (s.deptId === 'DEP_VP') deptName = 'Văn phòng Ban';
+        }
+
+        const existingIndex = users.findIndex(
+          (x) =>
+            (x.id && s.id && x.id === s.id) ||
+            (x.employeeCode && s.employeeCode && x.employeeCode.toUpperCase() === s.employeeCode.toUpperCase()) ||
+            (x.username && s.username && x.username.toLowerCase() === s.username.toLowerCase())
+        );
+
+        if (existingIndex >= 0) {
+          // Ghi đè phòng ban, chức danh mới nhất từ kpi_staffs
+          users[existingIndex] = {
+            ...users[existingIndex],
+            name: s.name || users[existingIndex].name,
+            title: s.title || users[existingIndex].title,
+            deptId: s.deptId || users[existingIndex].deptId,
+            department: deptName || users[existingIndex].department,
+            employeeCode: s.employeeCode || users[existingIndex].employeeCode,
+            role: s.role || users[existingIndex].role,
+            status: s.status || users[existingIndex].status,
+          };
+        } else if (s.username) {
           users.push({
             id: s.id,
             name: s.name,
             username: s.username,
             title: s.title || 'Chuyên viên',
-            department: s.department || 'Phòng chuyên môn',
+            department: deptName || 'Phòng chuyên môn',
             deptId: s.deptId,
             email: s.email || `${s.username}@kpi.gov.vn`,
             role: s.role || ROLES.STAFF,

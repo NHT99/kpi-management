@@ -41,6 +41,38 @@ export const INITIAL_VTVLS = [
     description: 'Thủ trưởng cơ quan, lãnh đạo toàn diện cơ quan, ký ban hành quyết định xếp loại toàn Ban.',
   },
   {
+    id: 'vtvl_ld_01',
+    code: 'VTVL-LĐB-01',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)',
+    deptId: '',
+    group: 'Nhóm Lãnh đạo, quản lý',
+    description: 'Lãnh đạo khối, chỉ đạo trực tiếp công tác Phòng Tổ chức đảng - Đảng viên.',
+  },
+  {
+    id: 'vtvl_ld_02',
+    code: 'VTVL-LĐB-02',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)',
+    deptId: '',
+    group: 'Nhóm Lãnh đạo, quản lý',
+    description: 'Lãnh đạo khối, chỉ đạo trực tiếp công tác Phòng Bảo vệ chính trị nội bộ.',
+  },
+  {
+    id: 'vtvl_ld_03',
+    code: 'VTVL-LĐB-03',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)',
+    deptId: '',
+    group: 'Nhóm Lãnh đạo, quản lý',
+    description: 'Lã đạo khối, chỉ đạo trực tiếp công tác Phòng Tổ chức cán bộ.',
+  },
+  {
+    id: 'vtvl_ld_04',
+    code: 'VTVL-LĐB-04',
+    title: 'Phó Trưởng ban (Phụ trách Văn phòng Ban)',
+    deptId: '',
+    group: 'Nhóm Lãnh đạo, quản lý',
+    description: 'Lãnh đạo khối, chỉ đạo trực tiếp công tác Văn phòng Ban.',
+  },
+  {
     id: 'vtvl_ld',
     code: 'VTVL-LĐB-01',
     title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)',
@@ -166,7 +198,7 @@ export const INITIAL_STAFFS = [
     username: 'long.lehoang',
     deptId: '',
     department: 'Lãnh đạo Ban',
-    vtvlId: 'vtvl_ld',
+    vtvlId: 'vtvl_ld_01',
     title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)',
     civilServantRank: 'Cán bộ lãnh đạo cấp Ban',
     role: ROLES.BAN_LEADER,
@@ -174,6 +206,54 @@ export const INITIAL_STAFFS = [
     status: 'ACTIVE',
     email: 'long.lehoang@kpi.gov.vn',
     phone: '0903.999.888',
+  },
+  {
+    id: 'user_leadership_02',
+    employeeCode: 'LD-2018-005',
+    name: 'Nguyễn Hoàng Nam',
+    username: 'nam.nguyenhoang',
+    deptId: '',
+    department: 'Lãnh đạo Ban',
+    vtvlId: 'vtvl_ld_02',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)',
+    civilServantRank: 'Cán bộ lãnh đạo cấp Ban',
+    role: ROLES.BAN_LEADER,
+    managedDeptId: 'DEP_BV',
+    status: 'ACTIVE',
+    email: 'nam.nguyenhoang@kpi.gov.vn',
+    phone: '0903.666.777',
+  },
+  {
+    id: 'user_leadership_03',
+    employeeCode: 'LD-2019-008',
+    name: 'Vũ Thị Mai Hoa',
+    username: 'hoa.vumai',
+    deptId: '',
+    department: 'Lãnh đạo Ban',
+    vtvlId: 'vtvl_ld_03',
+    title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)',
+    civilServantRank: 'Cán bộ lãnh đạo cấp Ban',
+    role: ROLES.BAN_LEADER,
+    managedDeptId: 'DEP_TCCB',
+    status: 'ACTIVE',
+    email: 'hoa.vumai@kpi.gov.vn',
+    phone: '0903.444.555',
+  },
+  {
+    id: 'user_leadership_04',
+    employeeCode: 'LD-2019-012',
+    name: 'Hoàng Minh Tuấn',
+    username: 'tuan.hoangminh',
+    deptId: '',
+    department: 'Lãnh đạo Ban',
+    vtvlId: 'vtvl_ld_04',
+    title: 'Phó Trưởng ban (Phụ trách Văn phòng Ban)',
+    civilServantRank: 'Cán bộ lãnh đạo cấp Ban',
+    role: ROLES.BAN_LEADER,
+    managedDeptId: 'DEP_VP',
+    status: 'ACTIVE',
+    email: 'tuan.hoangminh@kpi.gov.vn',
+    phone: '0903.222.333',
   },
   {
     id: 'user_depthead_01',
@@ -232,3 +312,144 @@ export const INITIAL_STAFFS = [
     phone: '0977.888.999',
   },
 ];
+
+/**
+ * Tự động đồng bộ hóa chuẩn hóa dữ liệu Lãnh đạo Ban trong localStorage
+ * Đảm bảo 100% dữ liệu về VTVL, phòng ban phụ trách, họ tên và mã số công chức của 5 Lãnh đạo Ban
+ * luôn đồng bộ và nhất quán trên toàn bộ ứng dụng, không bị lệch do cache cũ.
+ */
+export function migrateLeadershipDataInLocalStorage() {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    // 1. Đồng bộ kpi_vtvls
+    const rawVtvls = window.localStorage.getItem('kpi_vtvls');
+    if (rawVtvls) {
+      let vtvls = JSON.parse(rawVtvls);
+      let changedVtvl = false;
+      INITIAL_VTVLS.forEach((initV) => {
+        const idx = vtvls.findIndex((v) => v.id === initV.id);
+        if (idx === -1) {
+          vtvls.push(initV);
+          changedVtvl = true;
+        } else if (vtvls[idx].title !== initV.title || vtvls[idx].code !== initV.code) {
+          vtvls[idx] = { ...vtvls[idx], ...initV };
+          changedVtvl = true;
+        }
+      });
+      if (changedVtvl) {
+        window.localStorage.setItem('kpi_vtvls', JSON.stringify(vtvls));
+        window.dispatchEvent(new CustomEvent('local-storage-update', { detail: { key: 'kpi_vtvls', value: vtvls } }));
+      }
+    }
+
+    // 2. Đồng bộ kpi_staffs
+    const rawStaffs = window.localStorage.getItem('kpi_staffs');
+    if (rawStaffs) {
+      let staffs = JSON.parse(rawStaffs);
+      let changedStaff = false;
+
+      const leadershipDefinitions = [
+        {
+          id: 'user_leadership_head',
+          employeeCode: 'LD-2016-001',
+          name: 'Trần Đức Hưng',
+          vtvlId: 'vtvl_ld_head',
+          title: 'Trưởng ban / Chủ tịch Hội đồng',
+          managedDeptId: 'ALL',
+          deptId: '',
+          department: 'Lãnh đạo Ban',
+          email: 'hung.tranduc@kpi.gov.vn',
+          phone: '0903.111.222',
+        },
+        {
+          id: 'user_leadership_01',
+          employeeCode: 'LD-2018-003',
+          name: 'Lê Hoàng Long',
+          vtvlId: 'vtvl_ld_01',
+          title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức đảng - Đảng viên)',
+          managedDeptId: 'DEP_TCD',
+          deptId: '',
+          department: 'Lãnh đạo Ban',
+          email: 'long.lehoang@kpi.gov.vn',
+          phone: '0903.999.888',
+        },
+        {
+          id: 'user_leadership_02',
+          employeeCode: 'LD-2018-005',
+          name: 'Nguyễn Hoàng Nam',
+          vtvlId: 'vtvl_ld_02',
+          title: 'Phó Trưởng ban (Phụ trách Phòng Bảo vệ chính trị nội bộ)',
+          managedDeptId: 'DEP_BV',
+          deptId: '',
+          department: 'Lãnh đạo Ban',
+          email: 'nam.nguyenhoang@kpi.gov.vn',
+          phone: '0903.666.777',
+        },
+        {
+          id: 'user_leadership_03',
+          employeeCode: 'LD-2019-008',
+          name: 'Vũ Thị Mai Hoa',
+          vtvlId: 'vtvl_ld_03',
+          title: 'Phó Trưởng ban (Phụ trách Phòng Tổ chức cán bộ)',
+          managedDeptId: 'DEP_TCCB',
+          deptId: '',
+          department: 'Lãnh đạo Ban',
+          email: 'hoa.vumai@kpi.gov.vn',
+          phone: '0903.444.555',
+        },
+        {
+          id: 'user_leadership_04',
+          employeeCode: 'LD-2019-012',
+          name: 'Hoàng Minh Tuấn',
+          vtvlId: 'vtvl_ld_04',
+          title: 'Phó Trưởng ban (Phụ trách Văn phòng Ban)',
+          managedDeptId: 'DEP_VP',
+          deptId: '',
+          department: 'Lãnh đạo Ban',
+          email: 'tuan.hoangminh@kpi.gov.vn',
+          phone: '0903.222.333',
+        },
+      ];
+
+      leadershipDefinitions.forEach((ld) => {
+        const idx = staffs.findIndex((s) => s.id === ld.id || s.employeeCode === ld.employeeCode || s.name === ld.name);
+        if (idx !== -1) {
+          const s = staffs[idx];
+          if (
+            s.vtvlId !== ld.vtvlId ||
+            s.title !== ld.title ||
+            s.managedDeptId !== ld.managedDeptId ||
+            s.department !== ld.department ||
+            s.email !== ld.email ||
+            s.phone !== ld.phone
+          ) {
+            staffs[idx] = { ...s, ...ld };
+            changedStaff = true;
+          }
+        } else {
+          staffs.unshift({
+            ...ld,
+            username: ld.id.replace('user_', ''),
+            civilServantRank: 'Cán bộ lãnh đạo cấp Ban',
+            role: ROLES.BAN_LEADER,
+            status: 'ACTIVE',
+          });
+          changedStaff = true;
+        }
+      });
+
+      if (changedStaff) {
+        window.localStorage.setItem('kpi_staffs', JSON.stringify(staffs));
+        window.dispatchEvent(new CustomEvent('local-storage-update', { detail: { key: 'kpi_staffs', value: staffs } }));
+      }
+    }
+  } catch (err) {
+    console.error('Error during migrateLeadershipDataInLocalStorage:', err);
+  }
+}
+
+// Tự động kích hoạt migration đồng bộ ngay khi load module
+if (typeof window !== 'undefined') {
+  migrateLeadershipDataInLocalStorage();
+}
+

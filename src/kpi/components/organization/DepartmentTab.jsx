@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Card from '@mui/material/Card';
@@ -21,18 +21,29 @@ import TablePagination from '@mui/material/TablePagination';
 import Alert from '@mui/material/Alert';
 import Stack from '@mui/material/Stack';
 import Chip from '@mui/material/Chip';
+import Tooltip from '@mui/material/Tooltip';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import PeopleRoundedIcon from '@mui/icons-material/PeopleRounded';
 import InfoRoundedIcon from '@mui/icons-material/InfoRounded';
+import ShieldRoundedIcon from '@mui/icons-material/ShieldRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useToast } from '../../hooks/useToast';
 import { INITIAL_DEPARTMENTS, INITIAL_VTVLS, INITIAL_STAFFS } from '../../data/organizationData';
+import { getAllUsers } from '../../../rbac/users';
 import { useAuth } from '../../../rbac/AuthContext';
-import { ROLES } from '../../../rbac/roles';
+import {
+  ROLES,
+  isSameDept,
+  isDeputyBanLeader,
+  isAgencyHead,
+  isTrueDeptHead,
+  getEffectiveManagedDeptId,
+} from '../../../rbac/roles';
 import { logAction } from '../../utils/auditLogger';
 
 export default function DepartmentTab() {
@@ -50,6 +61,7 @@ export default function DepartmentTab() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
+  const [formData, setFormData] = useState({ code: '', name: '', description: '', functions: '' });
 
   const filteredDepartments = [...departments].reverse().filter((d) => {
     if (!searchTerm) return true;
@@ -58,10 +70,84 @@ export default function DepartmentTab() {
   });
   const paginatedDepartments = filteredDepartments.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
 
-  const [formData, setFormData] = useState({ code: '', name: '', description: '', functions: '' });
+  // Lắng nghe cập nhật realtime từ localStorage toàn hệ thống
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const handleStorage = () => setTick((t) => t + 1);
+    window.addEventListener('local-storage-update', handleStorage);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('local-storage-update', handleStorage);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
+  // Hợp nhất toàn bộ dữ liệu cán bộ từ kpi_staffs và getAllUsers
+  const allStaffs = useMemo(() => {
+    const userList = getAllUsers();
+    const merged = [...staffs];
+    userList.forEach((u) => {
+      if (!merged.some((s) => s.id === u.id || s.username === u.username || s.name === u.name)) {
+        merged.push({
+          id: u.id,
+          name: u.name,
+          username: u.username,
+          title: u.title,
+          deptId: u.deptId,
+          department: u.department,
+          role: u.role,
+          employeeCode: u.employeeCode,
+          managedDeptId: u.managedDeptId,
+          status: u.status || 'ACTIVE',
+        });
+      }
+    });
+    return merged;
+  }, [staffs]);
+
+  // Hàm trích xuất đầy đủ cơ cấu nhân sự của một phòng ban (Lãnh đạo phụ trách + Cán bộ công chức)
+  const getDeptPersonnel = (deptId) => {
+    // 1. Phó Trưởng ban được phân công phụ trách phòng
+    const leader = allStaffs.find(
+      (s) =>
+        (s.role === ROLES.BAN_LEADER || isDeputyBanLeader(s)) &&
+        !isAgencyHead(s) &&
+        isSameDept(getEffectiveManagedDeptId(s, departments), deptId, departments)
+    );
+
+    // 2. Trưởng phòng thực thụ (nếu có)
+    const deptHead = allStaffs.find(
+      (s) =>
+        isTrueDeptHead(s) &&
+        isSameDept(s.deptId || s.department, deptId, departments)
+    );
+
+    // 3. Cán bộ công chức chuyên môn của phòng (Loại trừ Trưởng ban, Phó Trưởng ban, Super Admin và HR Admin)
+    const directStaffs = allStaffs.filter(
+      (s) =>
+        !isAgencyHead(s) &&
+        !isDeputyBanLeader(s) &&
+        s.role !== ROLES.SUPER_ADMIN &&
+        s.role !== ROLES.HR_ADMIN &&
+        s.role !== 'SUPER_ADMIN' &&
+        s.role !== 'HR_ADMIN' &&
+        isSameDept(s.deptId || s.department, deptId, departments)
+    );
+
+    const allMembers = leader ? [leader, ...directStaffs] : directStaffs;
+    const totalCount = allMembers.length;
+
+    return {
+      leader,
+      deptHead,
+      directStaffs,
+      allMembers,
+      totalCount,
+    };
+  };
 
   const getStaffCount = (deptId) => {
-    return staffs.filter((s) => s.deptId === deptId).length;
+    return getDeptPersonnel(deptId).totalCount;
   };
 
   const handleOpenEdit = (dept) => {
@@ -202,37 +288,95 @@ export default function DepartmentTab() {
       {/* Department Cards Grid (NO edit button here per user request) */}
       <Grid container spacing={2} sx={{ mb: 4 }}>
         {departments.map((dept) => {
-          const count = getStaffCount(dept.id);
+          const { leader, directStaffs, totalCount, allMembers } = getDeptPersonnel(dept.id);
           return (
             <Grid size={{ xs: 12, sm: 6, md: 3 }} key={dept.id}>
               <Card
                 variant="outlined"
                 sx={{
-                  borderRadius: 2,
+                  borderRadius: 2.5,
                   p: 2.5,
                   height: '100%',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
                   transition: '0.2s',
-                  '&:hover': { boxShadow: 3 },
+                  '&:hover': { boxShadow: 4, borderColor: 'primary.main' },
                 }}
               >
                 <Box>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
                     <Chip label={dept.code} color="primary" size="small" sx={{ fontWeight: 700 }} />
-                    <Stack direction="row" spacing={0.5} alignItems="center">
-                      <PeopleRoundedIcon fontSize="small" color="action" />
-                      <Typography variant="body2" sx={{ fontWeight: 700, color: 'text.secondary' }}>
-                        {count} biên chế
-                      </Typography>
-                    </Stack>
+                    <Tooltip
+                      arrow
+                      placement="top"
+                      title={
+                        <Box sx={{ p: 0.5 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                            Danh sách cán bộ ({totalCount} nhân sự):
+                          </Typography>
+                          {allMembers.map((m) => (
+                            <Typography key={m.id || m.username} variant="caption" sx={{ display: 'block' }}>
+                              • {m.name} ({m.title || (m.role === ROLES.BAN_LEADER ? 'Phó Trưởng ban' : 'Cán bộ')})
+                            </Typography>
+                          ))}
+                        </Box>
+                      }
+                    >
+                      <Stack
+                        direction="row"
+                        spacing={0.5}
+                        alignItems="center"
+                        sx={{
+                          cursor: 'pointer',
+                          bgcolor: (theme) =>
+                            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                          px: 1,
+                          py: 0.25,
+                          borderRadius: 1.5,
+                        }}
+                      >
+                        <PeopleRoundedIcon fontSize="small" color="primary" />
+                        <Typography variant="body2" sx={{ fontWeight: 700, color: 'text.primary' }}>
+                          {totalCount} nhân sự
+                        </Typography>
+                      </Stack>
+                    </Tooltip>
                   </Stack>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1, minHeight: 48 }}>
+
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.5, minHeight: 48 }}>
                     {dept.name}
                   </Typography>
+
+                  {leader && (
+                    <Box
+                      sx={{
+                        mb: 1.5,
+                        p: 1,
+                        borderRadius: 1.5,
+                        bgcolor: (theme) =>
+                          theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(25, 118, 210, 0.04)',
+                        border: '1px solid',
+                        borderColor: 'divider',
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ display: 'block', color: 'primary.main', fontWeight: 700 }}>
+                        👤 Phó Trưởng ban phụ trách:
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, color: 'text.primary' }}>
+                        {leader.name}
+                      </Typography>
+                    </Box>
+                  )}
+
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5, lineHeight: 1.4 }}>
                     {dept.description}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ pt: 1, borderTop: '1px dashed', borderColor: 'divider' }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Cơ cấu: {leader && directStaffs.length > 0 ? `1 Lãnh đạo phụ trách • ${directStaffs.length} CB phòng` : leader ? '1 Lãnh đạo Ban phụ trách' : `${directStaffs.length} CB phòng`}
                   </Typography>
                 </Box>
               </Card>
@@ -295,7 +439,40 @@ export default function DepartmentTab() {
                       </Typography>
                     </TableCell>
                     <TableCell align="center">
-                      <Chip label={`${getStaffCount(d.id)} nhân sự`} size="small" color="info" variant="outlined" sx={{ fontWeight: 600 }} />
+                      {(() => {
+                        const { totalCount, allMembers, leader, directStaffs } = getDeptPersonnel(d.id);
+                        return (
+                          <Tooltip
+                            arrow
+                            placement="left"
+                            title={
+                              <Box sx={{ p: 0.5 }}>
+                                <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                                  Nhân sự {d.name} ({totalCount} cán bộ):
+                                </Typography>
+                                {allMembers.map((m) => (
+                                  <Typography key={m.id || m.username} variant="caption" sx={{ display: 'block' }}>
+                                    • {m.name} - {m.title || 'Cán bộ'}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            }
+                          >
+                            <Box sx={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer' }}>
+                              <Chip
+                                label={`${totalCount} nhân sự`}
+                                size="small"
+                                color="primary"
+                                variant="outlined"
+                                sx={{ fontWeight: 700 }}
+                              />
+                              <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.7rem', mt: 0.5 }}>
+                                {leader && directStaffs.length > 0 ? `1 Lãnh đạo + ${directStaffs.length} CB phòng` : leader ? '1 Lãnh đạo Ban phụ trách' : `${directStaffs.length} CB phòng`}
+                              </Typography>
+                            </Box>
+                          </Tooltip>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell align="center">
                       {isSuperAdmin && (

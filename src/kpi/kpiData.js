@@ -131,10 +131,10 @@ export const INITIAL_DEPT_STAFF = [
   },
   {
     id: 'staff-04',
-    name: 'Hoàng Minh Tuấn',
+    name: 'Đặng Văn Tuấn',
     title: 'Cán bộ Kế toán thanh toán',
     role: 'SPECIALIST',
-    email: 'tuan.hoangminh@kpi.gov.vn',
+    email: 'tuan.dangvan@kpi.gov.vn',
     employeeCode: 'CB-2025-009',
     totalKPIs: 3,
     progressAvg: 76.5,

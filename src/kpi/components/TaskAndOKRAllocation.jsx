@@ -1039,7 +1039,12 @@ export default function TaskAndOKRAllocation() {
                 const okrStats = getEffectiveOKRStats(okr, tasks);
                 const okrProgress = okrStats.progress;
                 const okrStatus = okrStats.status;
-                const linkedTasks = okrStats.linkedTasks;
+                const isRejectedTask = (t) =>
+                  t.approvalStatus === 'Từ chối' ||
+                  t.approvalStatus === 'Đã từ chối' ||
+                  t.status === 'Đã từ chối' ||
+                  t.status === 'Từ chối';
+                const linkedTasks = (okrStats.linkedTasks || []).filter((t) => !isRejectedTask(t));
                 return (
                   <Accordion
                     key={okr.id}

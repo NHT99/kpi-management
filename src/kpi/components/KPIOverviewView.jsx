@@ -60,7 +60,7 @@ import {
   calculateQuarterlyAverage,
   calculateAllStaffEvaluationsForPeriod,
 } from '../utils/yearWorkflowHelper';
-import { getFullYearQuarterOptions, isTaskInPeriod, normalizePeriodAndQuarter } from '../utils/quarterHelper';
+import { getFullYearQuarterOptions, isTaskInPeriod, normalizePeriodAndQuarter, cleanPeriodTag } from '../utils/quarterHelper';
 import { logAction } from '../utils/auditLogger';
 import PeriodMatrixPicker from './shared/PeriodMatrixPicker';
 import * as XLSX from 'xlsx';
@@ -95,7 +95,7 @@ export default function KPIOverviewView() {
     try {
       const raw = localStorage.getItem('kpi_users');
       if (raw) customUsers = JSON.parse(raw);
-    } catch {}
+    } catch { }
     const merged = [...staffs];
     [...userList, ...customUsers].forEach((u) => {
       if (!u) return;
@@ -107,14 +107,15 @@ export default function KPIOverviewView() {
           (s.name && u.name && s.name.trim().toLowerCase() === u.name.trim().toLowerCase())
       );
       if (!exists) {
+        const isBanLd = u.role === ROLES.BAN_LEADER || u.department === 'Lãnh đạo Ban';
         merged.push({
           id: u.id || `staff_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
           name: u.name,
           employeeCode: u.employeeCode || `CB-${u.username || 'NEW'}`,
           username: u.username,
           title: u.title || 'Chuyên viên',
-          deptId: u.deptId || 'DEP_VP',
-          department: u.department,
+          deptId: isBanLd ? '' : (u.deptId || 'DEP_VP'),
+          department: u.department || (isBanLd ? 'Lãnh đạo Ban' : 'Văn phòng Ban'),
           vtvlId: u.vtvlId || '',
           role: u.role || ROLES.STAFF,
           status: u.status || 'ACTIVE',
@@ -131,7 +132,9 @@ export default function KPIOverviewView() {
     return false;
   }, [selectedNorm, agencyApprovals]);
   const selectedPeriodObj = EVALUATION_PERIODS.find((p) => p.value === selectedPeriod);
-  const selectedPeriodLabel = selectedNorm.display || (selectedPeriodObj ? selectedPeriodObj.label : selectedPeriod);
+  const selectedPeriodLabel = cleanPeriodTag(
+    selectedNorm.display || selectedPeriodObj?.cleanLabel || selectedPeriodObj?.label || selectedPeriod
+  );
 
   // Compute all staff evaluations data using the unified calculation engine
   const allStaffCalculatedData = useMemo(() => {
@@ -855,9 +858,6 @@ export default function KPIOverviewView() {
               <Box>
                 <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
                   Tổng quan & Báo cáo KPI Tập thể
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  Dữ liệu tổng hợp đánh giá cán bộ, công chức theo Hướng dẫn 05-HD/TU
                 </Typography>
               </Box>
             </Box>
